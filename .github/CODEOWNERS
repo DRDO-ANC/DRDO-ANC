@@ -1,0 +1,7 @@
+# Replace with real GitHub usernames. Lead reviews everything.
+*                              @LEAD_USERNAME
+/signal-processing/            @P2_USERNAME
+/ai-engine/data/               @P3_USERNAME
+/ai-engine/evaluation/         @P3_USERNAME
+/ai-engine/inference/realtime/ @P4_USERNAME
+/java-backend/                 @P5_USERNAME

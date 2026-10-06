@@ -1,0 +1,22 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install ruff pytest numpy scipy
+      - run: ruff check .
+      - run: pytest -q
+  java:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build if backend exists
+        run: |
+          if [ -f java-backend/pom.xml ]; then mvn -B -f java-backend/pom.xml test; else echo "no backend yet"; fi
