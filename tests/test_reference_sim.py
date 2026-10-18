@@ -18,6 +18,7 @@ from ai_engine.data.reference_sim import (
 from common.constants import (
     CLIP_SAMPLES,
     MANIFEST_COLUMNS,
+    PEAK_NORM,
     SAMPLE_RATE,
     SEED,
 )
@@ -143,3 +144,19 @@ def test_validate_catches_snr_discrepancy(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="measured SNR .* differs by > 0.01 dB"):
         validate_manifest(rows, data_root)
+
+
+def test_reference_peak_normalisation_regression(rng: np.random.Generator) -> None:
+    """Regression test: reference signal whose unscaled peak exceeds PEAK_NORM.
+
+    Verifies the simulated reference signal peak is guarded to <= PEAK_NORM (0.99).
+    """
+    # Noise with peak close to 0.99 that can peak > 1.0 after FIR + sensor noise
+    noise = np.zeros(CLIP_SAMPLES, dtype=np.float32)
+    noise[:100] = 0.98 * np.sign(rng.normal(0, 1.0, 100))
+
+    ref = simulate_reference(noise, rng)
+
+    assert np.max(np.abs(ref)) <= PEAK_NORM + 1e-6
+    assert np.all(np.isfinite(ref))
+

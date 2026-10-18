@@ -31,3 +31,7 @@ The function `simulate_reference(noise, rng)` in `ai_engine/data/reference_sim.p
 
 4. **Speech Isolation**:
    - Clean speech arrays are strictly excluded from the reference simulation.
+
+5. **Peak Ceiling Guard**:
+   - The reference signal is rescaled by `PEAK_NORM / ref_peak` only when its maximum absolute amplitude exceeds `PEAK_NORM = 0.99`. This prevents digital clipping or distortion when written to 16-bit PCM WAV formats, which can otherwise occur due to constructive interference through the multi-tap FIR filter or additive sensor noise. When the unscaled reference peak is already $\le 0.99$, no rescaling is applied.
+

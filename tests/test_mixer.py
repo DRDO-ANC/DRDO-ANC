@@ -116,3 +116,29 @@ def test_reproducibility_with_same_seed() -> None:
     np.testing.assert_array_equal(out1_mix, out2_mix)
     np.testing.assert_array_equal(out1_clean, out2_clean)
     np.testing.assert_array_equal(out1_noise, out2_noise)
+
+
+def test_peak_norm_negative_snr_loud_noise(rng: np.random.Generator) -> None:
+    """Regression test: loud noise at negative SNR where max|noise| > max|mixed|.
+
+    Verifies all three signals (mixed, clean, noise) have peak <= PEAK_NORM (0.99)
+    and the SNR error is < 0.01 dB.
+    """
+    # Create signals where noise amplitude exceeds mixed due to destructive cancellation
+    t = np.linspace(0, 4.0, CLIP_SAMPLES, endpoint=False)
+    clean = (0.2 * np.sin(2 * np.pi * 300.0 * t)).astype(np.float32)
+    noise = rng.normal(0, 0.5, CLIP_SAMPLES).astype(np.float32)
+
+    snr_db = -5.0
+    mixed, clean_out, noise_out = mix_at_snr(clean, noise, snr_db, rng)
+
+    assert np.max(np.abs(mixed)) <= PEAK_NORM + 1e-6
+    assert np.max(np.abs(clean_out)) <= PEAK_NORM + 1e-6
+    assert np.max(np.abs(noise_out)) <= PEAK_NORM + 1e-6
+
+    # Verify SNR precision
+    clean_pow = np.mean(clean_out.astype(np.float64) ** 2)
+    noise_pow = np.mean(noise_out.astype(np.float64) ** 2)
+    actual_snr = 10.0 * np.log10(clean_pow / noise_pow)
+    assert abs(actual_snr - snr_db) < 0.01
+

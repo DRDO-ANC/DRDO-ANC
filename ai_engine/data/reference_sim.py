@@ -8,6 +8,8 @@ Clean speech NEVER enters the reference microphone.
 
 import numpy as np
 
+from common.constants import PEAK_NORM
+
 # Module-level physical and simulation bounds
 DELAY_MIN_SAMPLES: int = 0
 DELAY_MAX_SAMPLES: int = 80  # 0 to 5 ms at 16000 Hz
@@ -103,5 +105,10 @@ def simulate_reference(
         reference = delayed + sensor_noise
     else:
         reference = delayed
+
+    # 4. Rescale reference only if it would exceed PEAK_NORM
+    ref_peak = float(np.max(np.abs(reference)))
+    if ref_peak > PEAK_NORM:
+        reference = reference * (PEAK_NORM / ref_peak)
 
     return reference.astype(np.float32)

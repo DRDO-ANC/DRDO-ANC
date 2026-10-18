@@ -21,6 +21,7 @@ from common.constants import (
     CLIP_SAMPLES,
     MANIFEST_COLUMNS,
     NOISE_TYPES,
+    PEAK_NORM,
     SAMPLE_RATE,
     SEED,
     SNR_LEVELS_DB,
@@ -86,26 +87,26 @@ def validate_manifest(
             if not full_path.is_file():
                 raise ValueError(f"Row {idx}: missing audio file at {full_path}")
 
-        # 2. Validate lengths
+        # 2. Validate lengths, sample rate, and peak amplitudes (allowing 16-bit PCM quantization step)
         clean_audio, sr_c = sf.read(root / r["clean_path"], dtype="float32")
+        noise_audio, sr_n = sf.read(root / r["noise_path"], dtype="float32")
         mixed_audio, sr_m = sf.read(root / r["mixed_path"], dtype="float32")
         ref_audio, sr_r = sf.read(root / r["reference_path"], dtype="float32")
 
-        if sr_c != SAMPLE_RATE or sr_m != SAMPLE_RATE or sr_r != SAMPLE_RATE:
+        if sr_c != SAMPLE_RATE or sr_n != SAMPLE_RATE or sr_m != SAMPLE_RATE or sr_r != SAMPLE_RATE:
             raise ValueError(f"Row {idx}: sample rate mismatch with SAMPLE_RATE {SAMPLE_RATE}")
 
-        if len(clean_audio) != CLIP_SAMPLES:
-            raise ValueError(
-                f"Row {idx}: clean length {len(clean_audio)} != CLIP_SAMPLES {CLIP_SAMPLES}"
-            )
-        if len(mixed_audio) != CLIP_SAMPLES:
-            raise ValueError(
-                f"Row {idx}: mixed length {len(mixed_audio)} != CLIP_SAMPLES {CLIP_SAMPLES}"
-            )
-        if len(ref_audio) != CLIP_SAMPLES:
-            raise ValueError(
-                f"Row {idx}: reference length {len(ref_audio)} != CLIP_SAMPLES {CLIP_SAMPLES}"
-            )
+        for sig_name, sig in [("clean", clean_audio), ("noise", noise_audio), ("mixed", mixed_audio), ("reference", ref_audio)]:
+            if len(sig) != CLIP_SAMPLES:
+                raise ValueError(
+                    f"Row {idx}: {sig_name} length {len(sig)} != CLIP_SAMPLES {CLIP_SAMPLES}"
+                )
+            # 16-bit quantization tolerance is 1.0 / 32768.0 ~ 3.05e-5
+            peak_val = float(np.max(np.abs(sig)))
+            if peak_val > PEAK_NORM + 1e-4:
+                raise ValueError(
+                    f"Row {idx}: {sig_name} peak {peak_val:.6f} exceeds PEAK_NORM {PEAK_NORM}"
+                )
 
         # 3. Validate SNR accuracy within 0.01 dB
         target_snr = float(r["snr_db"])

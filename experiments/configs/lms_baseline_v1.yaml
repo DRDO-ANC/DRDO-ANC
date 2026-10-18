@@ -1,0 +1,6 @@
+name: lms_baseline_v1
+method: lms
+seed: 42
+dataset_version: dataset-v1
+params:
+  mu: 0.0001

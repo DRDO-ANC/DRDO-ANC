@@ -83,8 +83,8 @@ def mix_at_snr(
 
     mixed = clean_proc + scaled_noise
 
-    # 4. Joint peak normalisation
-    peak = float(np.max(np.abs(mixed)))
+    # 4. Joint peak normalisation across all three signals
+    peak = float(max(np.max(np.abs(mixed)), np.max(np.abs(clean_proc)), np.max(np.abs(scaled_noise))))
     if peak > PEAK_NORM:
         norm_factor = PEAK_NORM / peak
         mixed = mixed * norm_factor
