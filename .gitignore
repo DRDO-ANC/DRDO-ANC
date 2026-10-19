@@ -16,3 +16,4 @@ java-backend/target/
 .vscode/
 .DS_Store
 .env
+*.egg-info/
