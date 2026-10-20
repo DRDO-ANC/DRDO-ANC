@@ -1,7 +1,0 @@
-name: spectral_baseline_v1
-method: spectral
-seed: 42
-dataset_version: dataset-v1
-params:
-  alpha: 2.0
-  beta: 0.02
