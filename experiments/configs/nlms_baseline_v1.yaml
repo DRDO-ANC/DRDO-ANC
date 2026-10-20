@@ -1,8 +1,0 @@
-name: nlms_baseline_v1
-method: nlms
-seed: 42
-dataset_version: dataset-v1
-params:
-  taps: 4
-  mu: 0.5
-  eps: 0.000001
