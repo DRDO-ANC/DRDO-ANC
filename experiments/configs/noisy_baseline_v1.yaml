@@ -1,5 +1,0 @@
-name: noisy_baseline_v1
-method: noisy
-seed: 42
-dataset_version: dataset-v1
-params: {}
