@@ -8,7 +8,7 @@ Everyone builds against these so no one depends on an undocumented assumption.
 - Real-time hop: 20 ms (320 samples) — P4 may tune after latency tests
 
 ## STFT (P1 owns)
-- n_fft = 512, hop = 160, window = 400 (Hann)
+- n_fft = 512, hop = 256, window = 512 (Hann)
 - STFT lives inside the model wrapper; others pass waveforms only
 
 ## Enhancer signature (Python)
