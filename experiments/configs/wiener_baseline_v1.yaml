@@ -1,0 +1,6 @@
+name: wiener_baseline_v1
+method: wiener
+seed: 42
+dataset_version: dataset-v1
+params:
+  a: 0.98
