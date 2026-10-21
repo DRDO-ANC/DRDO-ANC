@@ -42,7 +42,7 @@ for row in rows:
                 errors.append(f"{row['id']}: {column} contains invalid values")
             if audio.size and np.max(np.abs(audio)) > 1.0:
                 errors.append(f"{row['id']}: {column} exceeds [-1, 1]")
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
             errors.append(f"{row['id']}: cannot read {column}: {exc}")
 
 if errors:
