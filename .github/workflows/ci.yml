@@ -17,6 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build if backend exists
-        run: |
-          if [ -f java-backend/pom.xml ]; then mvn -B -f java-backend/pom.xml test; else echo "no backend yet"; fi
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - run: mvn -B -f java-backend/pom.xml test
