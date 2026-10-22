@@ -234,6 +234,23 @@ class TestValidationAndProtocols:
                 ref_frame=np.zeros(50, dtype=np.float32),
             )
 
+    def test_no_direct_transforms_in_enhancer(self) -> None:
+        """Verify enhancer.py adheres to contract: no direct torch STFT/FFT/window calls."""
+        import re
+        from pathlib import Path
+
+        enhancer_path = (
+            Path(__file__).resolve().parent.parent
+            / "ai_engine"
+            / "models"
+            / "enhancer.py"
+        )
+        content = enhancer_path.read_text(encoding="utf-8")
+        matches = re.findall(
+            r"torch\.(?:stft|istft|fft\.rfft|fft\.irfft|hann_window)", content
+        )
+        assert not matches, f"Found direct transform calls in enhancer.py: {matches}"
+
 
 class TestModelIntegrations:
     """Integration tests wrapping real CRN and DCCRN baseline models."""
