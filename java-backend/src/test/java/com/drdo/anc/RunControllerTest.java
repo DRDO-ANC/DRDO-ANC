@@ -21,11 +21,15 @@ public class RunControllerTest {
     @Test
     void roundTrip() {
         controller.create(fixture("nlms"));
-        assertTrue(controller.list().contains(fixture("nlms")));
+        assertTrue(controller.list(null,null).contains(fixture("nlms")));
     }
 
     @Test
     void invalidMethodRejected() {
         assertThrows(ResponseStatusException.class, () -> controller.create(fixture("bad")));
+    }
+    @Test
+    void invalidSortByRejected() {
+        assertThrows(ResponseStatusException.class, () -> controller.list("bad", null));
     }
 }
