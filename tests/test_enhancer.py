@@ -514,3 +514,58 @@ class TestLatencyAndBenchmarking:
         # Execution latency must be well under the 16.0 ms budget (typically ~2-4 ms on CPU)
         assert median_ms < 16.0, f"Measured CPU execution latency {median_ms:.2f} ms exceeds 16 ms budget"
 
+
+class NanModel(nn.Module):
+    """Model that outputs NaNs for non-finite output testing."""
+
+    def forward(self, spec: torch.Tensor) -> torch.Tensor:
+        """Return NaN spectrum."""
+        return torch.full_like(spec, float("nan"))
+
+
+class TestDeviceSelectionAndNonFiniteHandling:
+    """Tests for device selection and non-finite output handling."""
+
+    def test_device_selection(self) -> None:
+        """Verify device selection logic for CPU, CUDA, and explicit devices."""
+        from ai_engine.models.enhancer import select_device
+
+        dev = select_device()
+        assert isinstance(dev, torch.device)
+
+        dev_cpu = select_device("cpu")
+        assert dev_cpu.type == "cpu"
+
+        dev_explicit = select_device(torch.device("cpu"))
+        assert dev_explicit.type == "cpu"
+
+    def test_non_finite_model_output_handling(self) -> None:
+        """Verify enhancer raises ValueError when wrapped model produces non-finite outputs."""
+        enhancer = AIEnhancer(NanModel(), device="cpu")
+        noisy = np.zeros(16000, dtype=np.float32)
+
+        with pytest.raises(ValueError, match="Enhanced audio contains non-finite values"):
+            enhancer.enhance(noisy)
+
+        frame = np.zeros(FRAME_SAMPLES, dtype=np.float32)
+        with pytest.raises(ValueError, match="Enhanced frame contains non-finite values"):
+            enhancer.process_frame(frame)
+
+    def test_multiple_successive_frames_stability(self) -> None:
+        """Verify streaming stability across 50 successive frames for both CRN and DCCRN."""
+        rng = np.random.default_rng(SEED)
+
+        for model_cls in (CRN, DCCRN):
+            torch.manual_seed(SEED)
+            model = model_cls().eval()
+            enhancer = AIEnhancer(model, device="cpu")
+            enhancer.reset()
+
+            for frame_idx in range(50):
+                frame = rng.uniform(-0.5, 0.5, size=FRAME_SAMPLES).astype(np.float32)
+                out = enhancer.process_frame(frame)
+                assert out.shape == (FRAME_SAMPLES,), f"Frame {frame_idx} shape mismatch"
+                assert out.dtype == np.float32, f"Frame {frame_idx} dtype mismatch"
+                assert np.all(np.isfinite(out)), f"Frame {frame_idx} contains non-finite values"
+
+
