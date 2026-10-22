@@ -17,3 +17,17 @@ Preliminary comparison of deep learning baseline architectures for active noise 
 - **CRN causality:** Causal at inference (eval mode); BatchNorm statistics are pooled across time during training.
 - **DCCRN:** Deep Complex Convolution Recurrent Network with causal complex 2D convolutional encoder, 2-layer unidirectional ComplexLSTM bottleneck, and causal complex 2D transposed-convolutional decoder with skip connections. Employs a polar complex ratio mask with bounded magnitude and phase shift applied to the noisy complex spectrum.
 - **DCCRN causality:** Causal at inference (eval mode); ComplexBatchNorm statistics are pooled across time during training.
+
+## How to Decide
+
+Final model selection between CRN and DCCRN must not be based on architectural intuition or personal preference. It must be determined empirically under strictly standardized conditions:
+
+1. **Frozen Dataset Evaluation:** Both models must be trained and evaluated on the exact same frozen dataset (`dataset-v1`), using identical speaker splits and noise conditions to ensure leakage-safe, fair comparisons.
+2. **Objective Audio Metrics:** Model performance must be evaluated quantitatively using standard speech enhancement and active noise cancellation metrics:
+   - **SI-SNR** (Scale-Invariant Signal-to-Noise Ratio improvement in dB)
+   - **SNR** (Standard Signal-to-Noise Ratio improvement in dB)
+   - **PESQ** (Perceptual Evaluation of Speech Quality, ITU-T P.862)
+   - **STOI** (Short-Time Objective Intelligibility)
+3. **Hardware & Latency Constraints:** Latency must be measured on the target deployment hardware (e.g., embedded / real-time streaming harness) with streaming state management enabled.
+4. **Trade-off Analysis:** A model with marginal PESQ/STOI gains must be evaluated against its latency and compute footprint within the real-time frame budget (e.g., DCCRN complex convolution overhead vs. CRN real-valued processing). The final candidate must satisfy both audio enhancement targets and real-time execution bounds.
+
