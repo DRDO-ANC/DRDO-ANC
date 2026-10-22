@@ -102,31 +102,117 @@ class TestDCCRN:
         logger.info("DCCRN parameter count: %d (%.2fM)", count, count / 1e6)
         assert 1_000_000 <= count <= 2_500_000, f"DCCRN parameter count {count} out of expected range"
 
-    def test_cpu_latency_single_frame(self, dccrn_model: DCCRN) -> None:
-        """Measure median CPU latency over 100 runs for a single 256-sample frame.
+    def test_cpu_latency_single_spectral_frame(self, dccrn_model: DCCRN) -> None:
+        """Measure median CPU latency over 100 runs for a single spectral frame [1, 257, 1].
+
+        Note: Recurrent (LSTM) hidden state is NOT retained across iterations (stateless call).
 
         Standalone latency measurement command:
-            python -c "import time, statistics, torch; from ai_engine.models.dccrn import DCCRN; m = DCCRN().eval(); x = torch.randn(1, 257, 1, dtype=torch.complex64); [m(x) for _ in range(20)]; times = [time.perf_counter() for _ in range(100)]; l = []; [l.append((time.perf_counter()-t0)*1000) for t0 in [time.perf_counter() for _ in range(100)]]; print('Median ms:', statistics.median(l))"
+            python -c "import time, statistics, torch; from ai_engine.models.dccrn import DCCRN; m = DCCRN().eval(); x = torch.randn(1, 257, 1, dtype=torch.complex64); \\
+with torch.inference_mode(): \\
+    for _ in range(20): m(x); \\
+    l = []; \\
+    for _ in range(100): \\
+        t0 = time.perf_counter(); \\
+        m(x); \\
+        l.append((time.perf_counter() - t0) * 1000); \\
+    print(f'Median ms: {statistics.median(l):.3f}')"
         """
-        # Warmup
         spec_frame = torch.randn(1, N_FREQ, 1, dtype=torch.complex64)
-        for _ in range(20):
-            _ = dccrn_model(spec_frame)
-
-        latencies_ms: list[float] = []
-        for _ in range(100):
-            t0 = time.perf_counter()
-            with torch.no_grad():
+        with torch.inference_mode():
+            # Warmup
+            for _ in range(20):
                 _ = dccrn_model(spec_frame)
-            t1 = time.perf_counter()
-            latencies_ms.append((t1 - t0) * 1000.0)
+
+            latencies_ms: list[float] = []
+            for _ in range(100):
+                t0 = time.perf_counter()
+                _ = dccrn_model(spec_frame)
+                t1 = time.perf_counter()
+                latencies_ms.append((t1 - t0) * 1000.0)
 
         median_ms = statistics.median(latencies_ms)
         logger.info(
-            "DCCRN single 256-sample frame CPU latency (median of 100 runs): %.3f ms",
+            "DCCRN single spectral frame [1, 257, 1] CPU latency (median of 100 runs): %.3f ms",
             median_ms,
         )
         assert median_ms > 0.0
+
+    def test_cpu_latency_256_sample_waveform_frame(self, dccrn_model: DCCRN) -> None:
+        """Measure median CPU latency over 100 runs for an isolated 256-sample waveform frame.
+
+        Note: This tests offline STFT -> DCCRN -> iSTFT on an isolated 256-sample buffer.
+        Because reflection padding produces 2 STFT frames and boundary reconstruction lacks
+        streaming overlap-add state, this is NOT equivalent to real-time stateful streaming.
+
+        Standalone latency measurement command:
+            python -c "import time, statistics, torch; from ai_engine.models.dccrn import DCCRN; from ai_engine.models.stft import STFT; m = DCCRN().eval(); stft = STFT(); x = torch.randn(1, 256); \\
+with torch.inference_mode(): \\
+    for _ in range(20): m.enhance_waveform(x, stft); \\
+    l = []; \\
+    for _ in range(100): \\
+        t0 = time.perf_counter(); \\
+        m.enhance_waveform(x, stft); \\
+        l.append((time.perf_counter() - t0) * 1000); \\
+    print(f'Median ms: {statistics.median(l):.3f}')"
+        """
+        stft = STFT()
+        wave_frame = torch.randn(1, 256)
+        with torch.inference_mode():
+            # Warmup
+            for _ in range(20):
+                _ = dccrn_model.enhance_waveform(wave_frame, stft=stft)
+
+            latencies_ms: list[float] = []
+            for _ in range(100):
+                t0 = time.perf_counter()
+                _ = dccrn_model.enhance_waveform(wave_frame, stft=stft)
+                t1 = time.perf_counter()
+                latencies_ms.append((t1 - t0) * 1000.0)
+
+        median_ms = statistics.median(latencies_ms)
+        logger.info(
+            "DCCRN 256-sample waveform frame CPU latency (median of 100 runs): %.3f ms",
+            median_ms,
+        )
+        assert median_ms > 0.0
+
+    def test_cpu_latency_1s_waveform_clip(self, dccrn_model: DCCRN) -> None:
+        """Measure median CPU latency over 50 runs for a 1-second waveform clip (16,000 samples).
+
+        Standalone latency measurement command:
+            python -c "import time, statistics, torch; from ai_engine.models.dccrn import DCCRN; from ai_engine.models.stft import STFT; m = DCCRN().eval(); stft = STFT(); x = torch.randn(1, 16000); \\
+with torch.inference_mode(): \\
+    for _ in range(10): m.enhance_waveform(x, stft); \\
+    l = []; \\
+    for _ in range(50): \\
+        t0 = time.perf_counter(); \\
+        m.enhance_waveform(x, stft); \\
+        l.append((time.perf_counter() - t0) * 1000); \\
+    print(f'Median ms: {statistics.median(l):.3f}')"
+        """
+        stft = STFT()
+        wave_1s = torch.randn(1, 16000)
+        with torch.inference_mode():
+            # Warmup
+            for _ in range(10):
+                _ = dccrn_model.enhance_waveform(wave_1s, stft=stft)
+
+            latencies_ms: list[float] = []
+            for _ in range(50):
+                t0 = time.perf_counter()
+                _ = dccrn_model.enhance_waveform(wave_1s, stft=stft)
+                t1 = time.perf_counter()
+                latencies_ms.append((t1 - t0) * 1000.0)
+
+        median_ms = statistics.median(latencies_ms)
+        logger.info(
+            "DCCRN 1-second waveform clip CPU latency (median of 50 runs): %.3f ms",
+            median_ms,
+        )
+        assert median_ms > 0.0
+
+
 
     def test_end_to_end_waveform_with_stft(self, dccrn_model: DCCRN) -> None:
         """Verify time-domain waveform processing via STFT -> DCCRN -> iSTFT."""
