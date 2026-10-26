@@ -12,6 +12,7 @@ import pytest
 from scipy.signal import lfilter
 
 from signal_processing import lms, nlms
+from signal_processing._adaptive import validate_positive
 
 
 def compute_snr_db(clean: np.ndarray, x: np.ndarray) -> float:
@@ -462,3 +463,192 @@ def test_nlms_scaling_invariance() -> None:
     assert (
         abs(gain_1x - gain_10x) < 1e-4
     ), f"NLMS gain changed by {abs(gain_1x - gain_10x):.6f} dB under x10 scaling"
+
+
+# --- Review Fix 1: validate_positive comprehensive parameter tests ---
+
+
+INVALID_POSITIVE_VALUES = [
+    pytest.param(1 + 2j, id="python_complex"),
+    pytest.param(np.complex128(1.0), id="numpy_complex128"),
+    pytest.param(np.complex64(1.0), id="numpy_complex64"),
+    pytest.param(True, id="bool_true"),
+    pytest.param(False, id="bool_false"),
+    pytest.param(np.array([1.0]), id="numpy_1d_array"),
+    pytest.param(np.array(1.0), id="numpy_0d_array"),
+    pytest.param(np.nan, id="nan"),
+    pytest.param(float("inf"), id="pos_inf"),
+    pytest.param(float("-inf"), id="neg_inf"),
+    pytest.param(0, id="zero_int"),
+    pytest.param(0.0, id="zero_float"),
+    pytest.param(-1.0, id="negative_float"),
+    pytest.param(-1, id="negative_int"),
+    pytest.param("0.5", id="string"),
+    pytest.param(None, id="none"),
+    pytest.param([1.0], id="list"),
+]
+
+
+@pytest.mark.parametrize("bad_value", INVALID_POSITIVE_VALUES)
+def test_validate_positive_rejects_invalid(bad_value) -> None:
+    """Verify validate_positive rejects complex, bool, arrays, NaN, inf, zero, negative, and non-numeric."""
+    with pytest.raises(ValueError, match="must be a finite number > 0"):
+        validate_positive(bad_value, "param")
+
+
+VALID_POSITIVE_VALUES = [
+    pytest.param(0.001, id="small_float"),
+    pytest.param(1.0, id="float_one"),
+    pytest.param(1, id="int_one"),
+    pytest.param(np.float64(0.5), id="numpy_float64"),
+    pytest.param(np.float32(0.1), id="numpy_float32"),
+    pytest.param(np.int32(1), id="numpy_int32"),
+    pytest.param(np.int64(2), id="numpy_int64"),
+]
+
+
+@pytest.mark.parametrize("good_value", VALID_POSITIVE_VALUES)
+def test_validate_positive_accepts_valid(good_value) -> None:
+    """Verify validate_positive accepts real, scalar, finite, positive values."""
+    result = validate_positive(good_value, "param")
+    assert isinstance(result, float)
+    assert result > 0
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [1 + 2j, np.complex128(1.0), True, np.array([1.0]), "0.5", None],
+)
+@pytest.mark.parametrize("module", [lms, nlms])
+def test_enhance_rejects_invalid_mu(module, bad_value) -> None:
+    """Verify enhance() raises ValueError for invalid mu types."""
+    noisy = np.ones(100, dtype=np.float32)
+    ref = np.ones(100, dtype=np.float32)
+    with pytest.raises(ValueError):
+        module.enhance(noisy, reference=ref, mu=bad_value)
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [1 + 2j, np.complex128(1.0), True, np.array([1.0]), "0.5", None],
+)
+def test_enhance_rejects_invalid_eps(bad_value) -> None:
+    """Verify nlms.enhance() raises ValueError for invalid eps types."""
+    noisy = np.ones(100, dtype=np.float32)
+    ref = np.ones(100, dtype=np.float32)
+    with pytest.raises(ValueError):
+        nlms.enhance(noisy, reference=ref, eps=bad_value)
+
+
+# --- Review Fix 3: NLMS scale invariance at different amplitudes ---
+
+
+@pytest.mark.parametrize(
+    ("scale", "expect_invariant"),
+    [
+        pytest.param(
+            1.0,
+            True,
+            id="normal_amplitude",
+        ),
+        pytest.param(
+            0.1,
+            True,
+            id="low_amplitude",
+        ),
+        pytest.param(
+            1e-4,
+            False,
+            id="very_low_amplitude",
+        ),
+    ],
+)
+def test_nlms_scale_invariance_by_amplitude(
+    scale: float, expect_invariant: bool
+) -> None:
+    """Test NLMS gain invariance at different signal amplitudes.
+
+    With fixed eps=1e-6, NLMS normalization divides by (eps + ||x||^2).
+    At normal and low amplitudes, ||x||^2 >> eps, so the filter is
+    effectively scale-invariant (gain matches baseline within tolerance).
+
+    At very low amplitudes (scale=1e-4), ||x||^2 ~ 1e-8 becomes
+    comparable to or smaller than eps=1e-6, so epsilon dominates the
+    denominator.  This effectively shrinks the step size and prevents
+    convergence.  This is a fundamental limitation of fixed-epsilon
+    NLMS, not a bug.
+    """
+    clean, noisy, ref = generate_grid_signals("tone", 0.0, 16)
+
+    # Baseline gain at scale=1.0
+    in_snr_base = compute_snr_db(clean, noisy)
+    out_base = nlms.enhance(noisy, reference=ref, sr=16000, order=32, mu=0.5)
+    gain_base = compute_snr_db(clean, out_base) - in_snr_base
+
+    # Scaled signals
+    s_clean = (clean * scale).astype(np.float32)
+    s_noisy = (noisy * scale).astype(np.float32)
+    s_ref = (ref * scale).astype(np.float32)
+
+    in_snr_s = compute_snr_db(s_clean, s_noisy)
+    out_s = nlms.enhance(s_noisy, reference=s_ref, sr=16000, order=32, mu=0.5)
+    gain_s = compute_snr_db(s_clean, out_s) - in_snr_s
+
+    diff = abs(gain_base - gain_s)
+    if expect_invariant:
+        assert diff < 0.01, (
+            f"NLMS gain changed by {diff:.6f} dB at scale={scale}; "
+            f"expected invariance (eps=1e-6 << ||x||^2)"
+        )
+    else:
+        # At very low amplitudes, eps dominates → gains diverge significantly
+        assert diff > 1.0, (
+            f"Expected significant gain difference at scale={scale} "
+            f"due to eps dominance, but diff was only {diff:.4f} dB"
+        )
+
+
+# --- Review Fix 4: Divergence guard coverage ---
+
+
+def test_divergence_guard_catches_nonfinite() -> None:
+    """Verify the non-finite output guard fires for deterministic LMS divergence.
+
+    The existing guard (``if not np.all(np.isfinite(out))``) reliably
+    detects NaN or infinite values produced when mu is well above the
+    stability bound, because exponential weight growth overflows float64
+    and the float32 cast produces inf/NaN.
+    """
+    rng = np.random.default_rng(42)
+    n = 3200
+    ref = rng.normal(0.0, 1.0, size=n).astype(np.float32)
+    noisy = rng.normal(0.0, 1.0, size=n).astype(np.float32)
+
+    # mu=0.1 well above stability bound ≈ 0.0625 for unit-variance, order=32
+    with (
+        pytest.warns(UserWarning, match="exceeds or equals stability bound"),
+        pytest.raises(ValueError, match="LMS filter diverged"),
+    ):
+        lms.enhance(noisy, reference=ref, order=32, mu=0.1)
+
+
+def test_divergence_guard_does_not_threshold_finite() -> None:
+    """Document that the divergence guard does not impose finite-magnitude thresholds.
+
+    The ``isfinite`` guard catches only NaN and infinity.  It does not
+    detect finite-but-large outputs, which would require an arbitrary,
+    domain-specific magnitude threshold.  This is by design: legitimate
+    use cases may produce large output amplitudes (e.g. high-power
+    reference signals), and false positives would be worse than allowing
+    the caller to inspect the output.
+    """
+    rng = np.random.default_rng(42)
+    n = 1600
+    # Low-power reference: stability bound ≈ 6.25 ≫ mu=0.002
+    ref = (rng.normal(0.0, 0.1, size=n)).astype(np.float32)
+    noisy = (rng.normal(0.0, 0.1, size=n)).astype(np.float32)
+
+    out = lms.enhance(noisy, reference=ref, sr=16000, order=32, mu=0.002)
+    # Output is finite; guard does not fire regardless of magnitude
+    assert np.all(np.isfinite(out))
+    assert out.dtype == np.float32

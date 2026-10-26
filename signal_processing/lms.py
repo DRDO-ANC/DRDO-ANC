@@ -22,7 +22,19 @@ def enhance(
     mu: float = 0.002,
     **params: object,
 ) -> np.ndarray:
-    """Enhance noisy signal using the Least Mean Squares (LMS) adaptive filter."""
+    """Enhance noisy signal using the Least Mean Squares (LMS) adaptive filter.
+
+    Notes
+    -----
+    The stability check ``mu >= 2 / (order * mean(reference**2))`` is a
+    classical *heuristic* derived from the independence assumption (i.e.
+    the reference taps are uncorrelated white noise with constant power).
+    It is **not** a universal stability guarantee: actual convergence
+    depends on signal statistics, correlation structure, and non-
+    stationarity.  In practice, convergence may require a significantly
+    smaller ``mu`` than the bound suggests, especially for coloured or
+    non-stationary reference signals.
+    """
     _ = params
     if reference is None:
         raise ValueError("Reference signal must be provided for LMS enhancement.")
@@ -36,6 +48,10 @@ def enhance(
     d = d_arr.astype(np.float64)
     x = x_arr.astype(np.float64)
 
+    # Stability heuristic: 2 / (order * E[x^2]).  This is a necessary
+    # condition only under the independence assumption (white, stationary
+    # reference).  Coloured or non-stationary signals may require a much
+    # smaller mu for convergence.  See Notes above.
     ref_power = float(np.mean(x**2))
     stability_bound = 2.0 / (order_val * ref_power) if ref_power > 0.0 else float("inf")
     if mu_val >= stability_bound:

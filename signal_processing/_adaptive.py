@@ -75,10 +75,15 @@ def validate_order(order: object) -> int:
 
 
 def validate_positive(value: object, name: str) -> float:
-    """Validate value is a real number, finite, and strictly positive."""
+    """Validate value is a real, scalar, finite, strictly positive numeric value.
+
+    Rejects complex numbers, NumPy complex scalars, booleans, arrays,
+    NaN, infinity, zero, negative values, and non-numeric types with
+    ``ValueError``.
+    """
     if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float, numbers.Real, np.number))
+        isinstance(value, (bool, complex, np.complexfloating))
+        or not isinstance(value, (int, float, numbers.Real, np.integer, np.floating))
         or not np.isfinite(value)
         or value <= 0
     ):
