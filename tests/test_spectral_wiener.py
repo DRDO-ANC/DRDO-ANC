@@ -14,7 +14,13 @@ import pytest
 from scipy.signal import lfilter
 
 from signal_processing import spectral, wiener
-from signal_processing._common import from_tf, noise_psd, to_tf, validate_waveform
+from signal_processing._common import (
+    from_tf,
+    noise_psd,
+    to_tf,
+    validate_sr,
+    validate_waveform,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -455,3 +461,101 @@ def test_validate_waveform_rejects_string() -> None:
     """Non-numeric input must raise ValueError."""
     with pytest.raises(ValueError, match="numeric"):
         validate_waveform(np.array(["a", "b"]))
+
+
+# --- sample-rate and full waveform dtype validation -----------------------
+
+@pytest.mark.parametrize(
+    "sample_rate",
+    [16000, 8000, np.int32(16000), np.int64(44100)],
+)
+def test_validate_sr_accepts_positive_integer(sample_rate: int) -> None:
+    assert validate_sr(sample_rate) == int(sample_rate)
+
+
+@pytest.mark.parametrize(
+    "sample_rate",
+    [0, -16000, 16000.5, "16000", None, True, np.array([16000])],
+)
+def test_validate_sr_rejects_invalid_values(sample_rate: object) -> None:
+    with pytest.raises(ValueError, match="sr must be"):
+        validate_sr(sample_rate)
+
+
+@pytest.mark.parametrize("module", [spectral, wiener])
+@pytest.mark.parametrize(
+    "sample_rate",
+    [0, -16000, 16000.5, "16000", None, True, np.array([16000])],
+)
+def test_enhance_rejects_invalid_sample_rate(module, sample_rate: object) -> None:
+    noisy = np.random.default_rng(42).uniform(-0.5, 0.5, size=100).astype(np.float32)
+    with pytest.raises(ValueError, match="sr must be"):
+        module.enhance(noisy, sr=sample_rate)
+
+
+@pytest.mark.parametrize("module", [spectral, wiener])
+@pytest.mark.parametrize("sample_rate", [16000, 8000, np.int32(16000), np.int64(44100)])
+def test_enhance_accepts_positive_integer_sample_rate(module, sample_rate: int) -> None:
+    noisy = np.random.default_rng(42).uniform(-0.5, 0.5, size=1000).astype(np.float32)
+    output = module.enhance(noisy, sr=sample_rate)
+    assert output.dtype == np.float32
+    assert output.shape == noisy.shape
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        np.array([0.1, 0.2], dtype=np.float32),
+        np.array([0.1, 0.2], dtype=np.float64),
+        np.array([1, 2], dtype=np.int16),
+        np.array([1, 2], dtype=np.int32),
+    ],
+)
+def test_validate_waveform_accepts_real_numeric_dtypes(values: np.ndarray) -> None:
+    result = validate_waveform(values)
+    assert result.dtype == np.float32
+    assert result.shape == values.shape
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        np.array([True, False]),
+        np.array([1 + 2j], dtype=np.complex64),
+        np.array(["abc"]),
+        np.array([object()], dtype=object),
+    ],
+)
+def test_validate_waveform_rejects_unsupported_dtypes(values: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="real numeric array"):
+        validate_waveform(values)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        np.zeros((2, 2), dtype=np.float32),
+        np.array(1.0, dtype=np.float32),
+    ],
+)
+def test_validate_waveform_rejects_non_1d(values: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="1-D"):
+        validate_waveform(values)
+
+
+def test_validate_waveform_rejects_empty() -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        validate_waveform(np.array([], dtype=np.float32))
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        np.array([np.nan], dtype=np.float32),
+        np.array([np.inf], dtype=np.float32),
+        np.array([1e40], dtype=np.float64),
+    ],
+)
+def test_validate_waveform_rejects_non_finite_or_overflow(values: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="non-finite"):
+        validate_waveform(values)
