@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import numbers
+from typing import Any
+
 import numpy as np
 from scipy import signal
 
@@ -9,6 +12,32 @@ N_FFT: int = 512
 HOP: int = 160
 WIN: int = 400
 EPS: float = 1e-10
+
+
+def validate_waveform(x: Any, name: str = "noisy") -> np.ndarray:
+    """Validate and convert waveform input to a 1-D float32 numpy array."""
+    try:
+        arr = np.asarray(x, dtype=np.float32)
+    except (ValueError, TypeError) as err:
+        raise ValueError(
+            f"Input '{name}' must be numeric, conversion failed: {err}"
+        ) from err
+
+    if not np.issubdtype(arr.dtype, np.floating):
+        raise ValueError(f"Input '{name}' must be numeric, got dtype {arr.dtype}")
+
+    if arr.ndim != 1:
+        raise ValueError(
+            f"Input '{name}' must be a 1-D array, got shape {arr.shape} (ndim={arr.ndim})"
+        )
+
+    if arr.size == 0:
+        raise ValueError(f"Input '{name}' cannot be empty, got size 0")
+
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"Input '{name}' contains non-finite values (NaN or inf)")
+
+    return arr
 
 
 def to_tf(x: np.ndarray, sr: int = 16000) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -51,16 +80,53 @@ def noise_psd(
     n_frames: int = 25,
     percentile: float = 10.0,
 ) -> np.ndarray:
-    """Estimate noise power spectral density across frequency bins."""
-    if p.ndim != 2:
-        raise ValueError(f"Expected 2-D power spectrogram [F, T], got shape {p.shape}")
-    num_frames = p.shape[1]
+    """Estimate noise power spectral density across frequency bins.
+
+    Supported modes:
+    - "initial": Average power over the first `n_frames` (clamped to available frames).
+    - "percentile": Per-bin percentile across all frames specified by `percentile`.
+    - "min_stats": Per-bin minimum power across the entire clip. This is a simplification
+      (no sliding window or running minimum tracker) that suits stationary noise but can
+      underestimate non-stationary noise.
+    """
+    if not isinstance(p, np.ndarray) or p.ndim != 2:
+        shape_info = getattr(p, "shape", None)
+        raise ValueError(f"Expected 2-D power spectrogram [F, T], got shape {shape_info}")
+
+    num_bins, num_frames = p.shape
+    if num_bins == 0 or num_frames == 0:
+        raise ValueError(
+            f"Power spectrogram must have non-zero bins and frames, got shape {p.shape}"
+        )
+
+    if not np.all(np.isfinite(p)):
+        raise ValueError("Power spectrogram contains non-finite values (NaN or inf)")
+
+    if np.any(p < 0.0):
+        raise ValueError("Power spectrogram cannot contain negative values")
+
+    # Validate n_frames: must be int (not bool) >= 1
+    if isinstance(n_frames, bool) or not isinstance(n_frames, numbers.Integral) or n_frames < 1:
+        raise ValueError(
+            f"n_frames must be an integer (not bool) >= 1, got {n_frames!r} of type {type(n_frames).__name__}"
+        )
+
+    # Validate percentile: must be a finite number with 0 <= percentile <= 100
+    if (
+        isinstance(percentile, bool)
+        or not isinstance(percentile, numbers.Real)
+        or not np.isfinite(percentile)
+        or not (0.0 <= float(percentile) <= 100.0)
+    ):
+        raise ValueError(
+            f"percentile must be a finite real number between 0 and 100, got {percentile!r}"
+        )
 
     if mode == "initial":
-        k = max(1, min(n_frames, num_frames))
+        k = max(1, min(int(n_frames), num_frames))
         pn = np.mean(p[:, :k], axis=1, keepdims=True)
     elif mode == "percentile":
-        pn = np.percentile(p, percentile, axis=1, keepdims=True)
+        pn = np.percentile(p, float(percentile), axis=1, keepdims=True)
     elif mode == "min_stats":
         pn = np.min(p, axis=1, keepdims=True)
     else:
