@@ -15,29 +15,43 @@ EPS: float = 1e-10
 
 
 def validate_waveform(x: Any, name: str = "noisy") -> np.ndarray:
-    """Validate and convert waveform input to a 1-D float32 numpy array."""
-    try:
-        arr = np.asarray(x, dtype=np.float32)
-    except (ValueError, TypeError) as err:
-        raise ValueError(
-            f"Input '{name}' must be numeric, conversion failed: {err}"
-        ) from err
+    """Validate a 1-D integer or floating-point waveform and return float32."""
+    arr = np.asarray(x)
 
-    if not np.issubdtype(arr.dtype, np.floating):
-        raise ValueError(f"Input '{name}' must be numeric, got dtype {arr.dtype}")
-
-    if arr.ndim != 1:
+    if not (
+        np.issubdtype(arr.dtype, np.integer)
+        or np.issubdtype(arr.dtype, np.floating)
+    ):
         raise ValueError(
-            f"Input '{name}' must be a 1-D array, got shape {arr.shape} (ndim={arr.ndim})"
+            f"{name} must be a real numeric array (int or float), got dtype {arr.dtype}"
         )
 
+    if arr.ndim != 1:
+        raise ValueError(f"{name} must be a 1-D array, got shape {arr.shape}")
+
     if arr.size == 0:
-        raise ValueError(f"Input '{name}' cannot be empty, got size 0")
+        raise ValueError(f"{name} must not be empty")
 
-    if not np.all(np.isfinite(arr)):
-        raise ValueError(f"Input '{name}' contains non-finite values (NaN or inf)")
+    with np.errstate(over="ignore"):
+        out = arr.astype(np.float32)
 
-    return arr
+    if not np.all(np.isfinite(out)):
+        raise ValueError(
+            f"{name} contains non-finite values (NaN, inf, or values too large for float32)"
+        )
+
+    return out
+
+
+def validate_sr(sr: object) -> int:
+    """Validate a positive integer sample rate in Hz."""
+    if (
+        isinstance(sr, (bool, np.bool_))
+        or not isinstance(sr, (int, np.integer))
+        or sr <= 0
+    ):
+        raise ValueError(f"sr must be a positive integer (Hz), got {sr!r}")
+    return int(sr)
 
 
 def to_tf(x: np.ndarray, sr: int = 16000) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

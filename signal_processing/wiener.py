@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from signal_processing._common import EPS, from_tf, noise_psd, to_tf, validate_waveform
+from signal_processing._common import (
+    EPS,
+    from_tf,
+    noise_psd,
+    to_tf,
+    validate_sr,
+    validate_waveform,
+)
 
 
 def enhance(
@@ -28,8 +35,9 @@ def enhance(
     """
     _ = reference, params
     noisy_arr = validate_waveform(noisy, name="noisy")
+    sample_rate = validate_sr(sr)
 
-    _, _, z = to_tf(noisy_arr, sr=sr)
+    _, _, z = to_tf(noisy_arr, sr=sample_rate)
     p = np.abs(z) ** 2
     pn = noise_psd(p, mode=noise_mode)
 
@@ -60,4 +68,4 @@ def enhance(
             prev_s_p = (gain_l**2) * p_l
 
     z_clean = gain * z
-    return from_tf(z_clean, length=len(noisy_arr), sr=sr)
+    return from_tf(z_clean, length=len(noisy_arr), sr=sample_rate)
