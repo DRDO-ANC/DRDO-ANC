@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-import sounddevice as sd
 
 try:
     import psutil
@@ -110,7 +109,13 @@ def list_audio_devices() -> list[dict[str, Any]]:
     list[dict[str, Any]]
         List of device info dictionaries from sounddevice.
     """
-    devices = sd.query_devices()
+    try:
+        import sounddevice as sd
+
+        devices = sd.query_devices()
+    except Exception:  # noqa: BLE001
+        return []
+
     result = []
     for idx, dev in enumerate(devices):
         info = dict(dev)
@@ -122,13 +127,20 @@ def list_audio_devices() -> list[dict[str, Any]]:
 def print_audio_devices() -> None:
     """Print all available audio devices in a human-readable table."""
     devices = list_audio_devices()
-    default_in, default_out = sd.default.device
+    default_in: int | None = None
+    default_out: int | None = None
+    try:
+        import sounddevice as sd
+
+        default_in, default_out = sd.default.device
+    except Exception:  # noqa: BLE001, S110
+        pass
 
     print("\n--- Available Audio Devices ---")
     print(f"{'ID':<4} {'Type':<12} {'Channels (In/Out)':<20} {'Name'}")
     print("-" * 70)
     for dev in devices:
-        idx = dev["index"]
+        idx = dev.get("index", -1)
         max_in = dev.get("max_input_channels", 0)
         max_out = dev.get("max_output_channels", 0)
         dtype = []
@@ -139,14 +151,15 @@ def print_audio_devices() -> None:
         type_str = "/".join(dtype) if dtype else "None"
 
         marker = ""
-        if idx == default_in and idx == default_out:
-            marker = " [DEFAULT IN/OUT]"
-        elif idx == default_in:
-            marker = " [DEFAULT IN]"
-        elif idx == default_out:
-            marker = " [DEFAULT OUT]"
+        if default_in is not None and default_out is not None:
+            if idx == default_in and idx == default_out:
+                marker = " [DEFAULT IN/OUT]"
+            elif idx == default_in:
+                marker = " [DEFAULT IN]"
+            elif idx == default_out:
+                marker = " [DEFAULT OUT]"
 
-        name = dev.get("name", "Unknown") + marker
+        name = str(dev.get("name", "Unknown")) + marker
         print(f"{idx:<4} {type_str:<12} {f'{max_in} in / {max_out} out':<20} {name}")
     print("-" * 70)
     print("Recommendation: Use wired headphones to eliminate acoustic feedback.\n")
@@ -183,6 +196,14 @@ def run_stream(
     StreamStatistics
         Comprehensive diagnostics covering latency, buffer health, and CPU usage.
     """
+    try:
+        import sounddevice as sd
+    except (ImportError, OSError, Exception) as exc:
+        raise RuntimeError(
+            "Real-time audio streaming requires 'sounddevice' and the native PortAudio library, "
+            f"which are currently unavailable: {exc}"
+        ) from exc
+
     stats = StreamStatistics()
     budget_ms = (FRAME_SAMPLES / SAMPLE_RATE) * 1000.0  # 16.0 ms
 
@@ -202,19 +223,19 @@ def run_stream(
         outdata: np.ndarray,
         frames: int,
         time_info: Any,
-        status: sd.CallbackFlags,
+        status: Any,
     ) -> None:
         nonlocal stats
 
         # 1. Inspect status flags for underflow/overflow
         if status:
-            if status.input_overflow:
+            if getattr(status, "input_overflow", False):
                 stats.input_overflows += 1
-            if status.input_underflow:
+            if getattr(status, "input_underflow", False):
                 stats.input_underflows += 1
-            if status.output_overflow:
+            if getattr(status, "output_overflow", False):
                 stats.output_overflows += 1
-            if status.output_underflow:
+            if getattr(status, "output_underflow", False):
                 stats.output_underflows += 1
 
         # 2. Timing measurement start

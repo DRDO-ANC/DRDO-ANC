@@ -7,6 +7,9 @@ enhancers without requiring real audio hardware.
 
 from __future__ import annotations
 
+import builtins
+import importlib
+import sys
 import threading
 import time
 from typing import Any
@@ -29,6 +32,28 @@ from common.interface import StreamingEnhancer
 # ---------------------------------------------------------------------------
 # Test Fixtures & Dummy Enhancers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_sounddevice() -> MagicMock:
+    """Provide a mocked sounddevice module in sys.modules to isolate tests from audio hardware."""
+    mock_sd = MagicMock()
+    mock_stream_instance = MagicMock()
+    mock_stream_cls = MagicMock(return_value=mock_stream_instance)
+    mock_stream_instance.__enter__.return_value = mock_stream_instance
+    mock_stream_instance.__exit__.return_value = None
+    mock_sd.Stream = mock_stream_cls
+    mock_sd.query_devices = MagicMock(
+        return_value=[
+            {"name": "Mock Microphone", "max_input_channels": 1, "max_output_channels": 0},
+            {"name": "Mock Headphones", "max_input_channels": 0, "max_output_channels": 2},
+        ]
+    )
+    mock_sd.default = MagicMock()
+    mock_sd.default.device = (0, 1)
+
+    with patch.dict(sys.modules, {"sounddevice": mock_sd}):
+        yield mock_sd
 
 
 class DummyPassthroughEnhancer:
@@ -319,6 +344,139 @@ class TestAudioCallbackSafety:
         assert stats.callback_failures == 1
         assert np.all(outdata == 0.0), "Expected silence on exception"
 
+    def test_run_stream_callback_execution(self, mock_sounddevice: MagicMock) -> None:
+        """Verify callback within run_stream processes audio and updates statistics correctly."""
+        mock_stream_cls = mock_sounddevice.Stream
+        enhancer = DummyPassthroughEnhancer()
+        stop_event = threading.Event()
+        stop_event.set()
+
+        stats = run_stream(enhancer=enhancer, stop_event=stop_event)
+        callback = mock_stream_cls.call_args.kwargs["callback"]
+
+        indata = np.full((FRAME_SAMPLES, 1), 0.35, dtype=np.float32)
+        outdata = np.zeros((FRAME_SAMPLES, 1), dtype=np.float32)
+
+        status = MagicMock()
+        status.input_overflow = True
+        status.input_underflow = False
+        status.output_overflow = False
+        status.output_underflow = True
+
+        callback(indata, outdata, FRAME_SAMPLES, None, status)
+
+        assert outdata.shape == (FRAME_SAMPLES, 1)
+        assert outdata.dtype == np.float32
+        assert np.allclose(outdata[:, 0], 0.35)
+        assert stats.frames_processed == 1
+        assert stats.input_overflows == 1
+        assert stats.output_underflows == 1
+        assert stats.callback_failures == 0
+
+    def test_run_stream_callback_clipping_protection(
+        self, mock_sounddevice: MagicMock
+    ) -> None:
+        """Verify run_stream callback strictly limits audio amplitudes to [-1.0, 1.0]."""
+        mock_stream_cls = mock_sounddevice.Stream
+        enhancer = DummyPassthroughEnhancer()
+        stop_event = threading.Event()
+        stop_event.set()
+
+        run_stream(enhancer=enhancer, stop_event=stop_event)
+        callback = mock_stream_cls.call_args.kwargs["callback"]
+
+        indata = np.array([2.5, -3.0, 1.2, -1.8] * 64, dtype=np.float32).reshape(
+            FRAME_SAMPLES, 1
+        )
+        outdata = np.zeros((FRAME_SAMPLES, 1), dtype=np.float32)
+
+        callback(indata, outdata, FRAME_SAMPLES, None, None)
+
+        assert np.all(outdata <= 1.0)
+        assert np.all(outdata >= -1.0)
+        assert outdata[0, 0] == 1.0
+        assert outdata[1, 0] == -1.0
+
+    def test_run_stream_callback_invalid_frame_silenced(
+        self, mock_sounddevice: MagicMock
+    ) -> None:
+        """Verify callback outputs silence and increments failure count on bad shape."""
+        mock_stream_cls = mock_sounddevice.Stream
+        enhancer = DummyShapeMismatchEnhancer()
+        stop_event = threading.Event()
+        stop_event.set()
+
+        stats = run_stream(enhancer=enhancer, stop_event=stop_event)
+        callback = mock_stream_cls.call_args.kwargs["callback"]
+
+        indata = np.ones((FRAME_SAMPLES, 1), dtype=np.float32)
+        outdata = np.ones((FRAME_SAMPLES, 1), dtype=np.float32)
+
+        callback(indata, outdata, FRAME_SAMPLES, None, None)
+
+        assert stats.callback_failures == 1
+        assert np.all(outdata == 0.0)
+
+    def test_run_stream_callback_dtype_mismatch_silenced(
+        self, mock_sounddevice: MagicMock
+    ) -> None:
+        """Verify callback outputs silence when enhancer returns float64 instead of float32."""
+        mock_stream_cls = mock_sounddevice.Stream
+        enhancer = DummyDtypeMismatchEnhancer()
+        stop_event = threading.Event()
+        stop_event.set()
+
+        stats = run_stream(enhancer=enhancer, stop_event=stop_event)
+        callback = mock_stream_cls.call_args.kwargs["callback"]
+
+        indata = np.ones((FRAME_SAMPLES, 1), dtype=np.float32)
+        outdata = np.ones((FRAME_SAMPLES, 1), dtype=np.float32)
+
+        callback(indata, outdata, FRAME_SAMPLES, None, None)
+
+        assert stats.callback_failures == 1
+        assert np.all(outdata == 0.0)
+
+    def test_run_stream_callback_nan_silenced(
+        self, mock_sounddevice: MagicMock
+    ) -> None:
+        """Verify callback outputs silence when enhancer produces NaN values."""
+        mock_stream_cls = mock_sounddevice.Stream
+        enhancer = DummyNanEnhancer()
+        stop_event = threading.Event()
+        stop_event.set()
+
+        stats = run_stream(enhancer=enhancer, stop_event=stop_event)
+        callback = mock_stream_cls.call_args.kwargs["callback"]
+
+        indata = np.ones((FRAME_SAMPLES, 1), dtype=np.float32)
+        outdata = np.ones((FRAME_SAMPLES, 1), dtype=np.float32)
+
+        callback(indata, outdata, FRAME_SAMPLES, None, None)
+
+        assert stats.callback_failures == 1
+        assert np.all(outdata == 0.0)
+
+    def test_run_stream_callback_exception_silenced(
+        self, mock_sounddevice: MagicMock
+    ) -> None:
+        """Verify callback outputs silence and increments failure count on exception."""
+        mock_stream_cls = mock_sounddevice.Stream
+        enhancer = DummyExceptionEnhancer()
+        stop_event = threading.Event()
+        stop_event.set()
+
+        stats = run_stream(enhancer=enhancer, stop_event=stop_event)
+        callback = mock_stream_cls.call_args.kwargs["callback"]
+
+        indata = np.ones((FRAME_SAMPLES, 1), dtype=np.float32)
+        outdata = np.ones((FRAME_SAMPLES, 1), dtype=np.float32)
+
+        callback(indata, outdata, FRAME_SAMPLES, None, None)
+
+        assert stats.callback_failures == 1
+        assert np.all(outdata == 0.0)
+
 
 # ---------------------------------------------------------------------------
 # 3. Stream Lifecycle & Integration Tests
@@ -337,9 +495,28 @@ class TestStreamLifecycle:
         out = enhancer.process_frame(frame)
         assert np.array_equal(out, frame)
 
-    @patch("sounddevice.Stream")
-    def test_stream_lifecycle_with_mock(self, mock_stream_cls: MagicMock) -> None:
+    def test_passthrough_enhancer_shape_dtype_and_purity(self) -> None:
+        """Verify PassthroughStreamingEnhancer preserves frame shape, dtype, and does not mutate input."""
+        enhancer = PassthroughStreamingEnhancer()
+        enhancer.reset()
+
+        rng = np.random.default_rng(42)
+        input_frame = rng.uniform(-0.8, 0.8, size=FRAME_SAMPLES).astype(np.float32)
+        input_copy = input_frame.copy()
+
+        output_frame = enhancer.process_frame(input_frame)
+
+        assert output_frame.shape == (FRAME_SAMPLES,)
+        assert output_frame.dtype == np.float32
+        assert np.array_equal(output_frame, input_copy)
+
+        # Ensure returned array is a distinct copy (no in-place mutation)
+        output_frame[0] = 999.0
+        assert input_frame[0] != 999.0
+
+    def test_stream_lifecycle_with_mock(self, mock_sounddevice: MagicMock) -> None:
         """Verify run_stream initializes stream with contract parameters and stops cleanly."""
+        mock_stream_cls = mock_sounddevice.Stream
         mock_stream_instance = MagicMock()
         mock_stream_cls.return_value.__enter__.return_value = mock_stream_instance
 
@@ -372,18 +549,73 @@ class TestStreamLifecycle:
         assert isinstance(stats, StreamStatistics)
         assert stats.stream_duration_s >= 0.0
 
-    @patch("sounddevice.Stream")
     def test_stream_keyboard_interrupt_handled_cleanly(
-        self, mock_stream_cls: MagicMock
+        self, mock_sounddevice: MagicMock
     ) -> None:
         """Verify KeyboardInterrupt terminates stream without unhandled exception."""
-        mock_stream_cls.return_value.__enter__.side_effect = KeyboardInterrupt
+        mock_sounddevice.Stream.return_value.__enter__.side_effect = KeyboardInterrupt
 
         enhancer = DummyPassthroughEnhancer()
         stats = run_stream(enhancer=enhancer)
 
         assert isinstance(stats, StreamStatistics)
         assert enhancer.reset_count == 1
+
+    def test_stream_stops_after_duration(self, mock_sounddevice: MagicMock) -> None:
+        """Verify run_stream terminates cleanly when duration elapsed."""
+        enhancer = DummyPassthroughEnhancer()
+        stats = run_stream(enhancer=enhancer, duration=0.01)
+
+        assert isinstance(stats, StreamStatistics)
+        assert stats.stream_duration_s >= 0.01
+
+    def test_stream_raises_runtime_error_when_sounddevice_unavailable(self) -> None:
+        """Verify run_stream raises informative RuntimeError when sounddevice is missing."""
+        with patch.dict(sys.modules, {"sounddevice": None}):
+            enhancer = DummyPassthroughEnhancer()
+            with pytest.raises(
+                RuntimeError,
+                match="Real-time audio streaming requires 'sounddevice'",
+            ):
+                run_stream(enhancer=enhancer)
+
+    def test_stream_raises_runtime_error_on_portaudio_oserror(self) -> None:
+        """Verify run_stream raises RuntimeError if PortAudio C library fails to initialize."""
+        orig_import = builtins.__import__
+
+        def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "sounddevice":
+                raise OSError("PortAudio library not found")
+            return orig_import(name, *args, **kwargs)
+
+        with patch.dict(sys.modules), patch("builtins.__import__", side_effect=fake_import):
+            sys.modules.pop("sounddevice", None)
+            enhancer = DummyPassthroughEnhancer()
+            with pytest.raises(
+                RuntimeError,
+                match="PortAudio library not found",
+            ):
+                run_stream(enhancer=enhancer)
+
+    def test_import_realtime_stream_without_audio_hardware(self) -> None:
+        """Verify importing stream.py does not initialize PortAudio or fail on headless runner."""
+        orig_import = builtins.__import__
+
+        def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "sounddevice":
+                raise OSError("PortAudio library not found")
+            return orig_import(name, *args, **kwargs)
+
+        with patch.dict(sys.modules), patch("builtins.__import__", side_effect=fake_import):
+            sys.modules.pop("sounddevice", None)
+            import ai_engine.inference.realtime.stream as stream_mod
+
+            importlib.reload(stream_mod)
+            assert hasattr(stream_mod, "PassthroughStreamingEnhancer")
+            assert hasattr(stream_mod, "StreamStatistics")
+            assert hasattr(stream_mod, "list_audio_devices")
+            assert hasattr(stream_mod, "print_audio_devices")
+            assert hasattr(stream_mod, "run_stream")
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +627,7 @@ class TestDeviceAndDiagnostics:
     """Tests for device enumeration and diagnostics formatting."""
 
     def test_list_audio_devices(self) -> None:
-        """Verify list_audio_devices returns non-empty device list on host."""
+        """Verify list_audio_devices returns non-empty device list on host if devices exist."""
         devices = list_audio_devices()
         assert isinstance(devices, list)
         if len(devices) > 0:
@@ -403,12 +635,53 @@ class TestDeviceAndDiagnostics:
             assert "index" in dev
             assert "name" in dev
 
+    def test_list_audio_devices_mocked(self, mock_sounddevice: MagicMock) -> None:
+        """Verify list_audio_devices processes query_devices output."""
+        devices = list_audio_devices()
+        assert len(devices) == 2
+        assert devices[0]["index"] == 0
+        assert devices[0]["name"] == "Mock Microphone"
+        assert devices[1]["index"] == 1
+        assert devices[1]["name"] == "Mock Headphones"
+
+    def test_list_audio_devices_exception_handled(self) -> None:
+        """Verify list_audio_devices safely returns empty list if sounddevice query fails."""
+        mock_sd = MagicMock()
+        mock_sd.query_devices.side_effect = RuntimeError("PortAudio host error")
+        with patch.dict(sys.modules, {"sounddevice": mock_sd}):
+            devices = list_audio_devices()
+            assert devices == []
+
     def test_print_audio_devices(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Verify print_audio_devices executes and prints table."""
         print_audio_devices()
         captured = capsys.readouterr()
         assert "Available Audio Devices" in captured.out
         assert "wired headphones" in captured.out.lower()
+
+    def test_print_audio_devices_mocked(
+        self, mock_sounddevice: MagicMock, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Verify print_audio_devices formats table and identifies default devices."""
+        print_audio_devices()
+        captured = capsys.readouterr()
+        assert "Available Audio Devices" in captured.out
+        assert "Mock Microphone" in captured.out
+        assert "Mock Headphones" in captured.out
+        assert "[DEFAULT IN]" in captured.out
+        assert "[DEFAULT OUT]" in captured.out
+
+    def test_print_audio_devices_exception_handled(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Verify print_audio_devices runs gracefully even if sounddevice query fails."""
+        mock_sd = MagicMock()
+        mock_sd.query_devices.side_effect = OSError("PortAudio not available")
+        with patch.dict(sys.modules, {"sounddevice": mock_sd}):
+            print_audio_devices()
+            captured = capsys.readouterr()
+            assert "Available Audio Devices" in captured.out
+            assert "Recommendation: Use wired headphones" in captured.out
 
     def test_statistics_summary_formatting(self) -> None:
         """Verify StreamStatistics summary produces valid diagnostic output."""
