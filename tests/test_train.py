@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -241,7 +242,7 @@ params:
 name: cli_test
 method: crn
 seed: 42
-dataset_version: v1
+dataset_version: prototype
 manifest_csv: {manifest_csv}
 params:
   model: crn
@@ -259,6 +260,41 @@ params:
             "--config",
             str(cfg_path),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        # Explicitly propagate required env vars so subprocess sees them
+        env = {
+            **os.environ,
+            "DATA_ROOT": os.environ.get("DATA_ROOT", ""),
+            "CKPT_DIR": os.environ.get("CKPT_DIR", ""),
+        }
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
         assert proc.returncode == 0, f"CLI command failed with stderr: {proc.stderr}"
         assert "Training completed successfully" in proc.stderr or "Training completed successfully" in proc.stdout
+
+    def test_reproducible_training_with_seed(
+        self, synthetic_training_env: tuple[Path, Path]
+    ) -> None:
+        """Verify two training runs with the same seed produce identical loss sequences."""
+        manifest_csv, _ = synthetic_training_env
+        cfg_path = manifest_csv.parent / "repro_test.yaml"
+        cfg_path.write_text(
+            f"""
+name: repro_test
+method: crn
+seed: 42
+dataset_version: prototype
+manifest_csv: {manifest_csv}
+params:
+  model: crn
+  lr: 0.005
+  batch_size: 4
+  epochs: 2
+  overfit_n: 8
+"""
+        )
+
+        res_a = train(cfg_path, device_override="cpu")
+        res_b = train(cfg_path, device_override="cpu")
+
+        assert res_a["train_losses"] == res_b["train_losses"], (
+            f"Losses differ between seeded runs: {res_a['train_losses']} vs {res_b['train_losses']}"
+        )

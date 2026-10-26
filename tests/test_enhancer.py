@@ -179,6 +179,57 @@ class TestStreamingEnhancement:
         second_run_out = stateful_enhancer.process_frame(frame)
         assert np.array_equal(first_run_out, second_run_out)
 
+    def test_streaming_sine_wave_continuity_and_alignment(
+        self, identity_enhancer: AIEnhancer
+    ) -> None:
+        """Verify deterministic sine wave has no boundary discontinuities and aligns after 1-frame delay."""
+        t = np.arange(SAMPLE_RATE * 2) / SAMPLE_RATE
+        sine_wave = 0.5 * np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
+
+        identity_enhancer.reset()
+        num_frames = len(sine_wave) // FRAME_SAMPLES
+        outs: list[np.ndarray] = []
+        for i in range(num_frames):
+            f = sine_wave[i * FRAME_SAMPLES : (i + 1) * FRAME_SAMPLES]
+            outs.append(identity_enhancer.process_frame(f))
+        reconstructed = np.concatenate(outs)
+
+        delay = FRAME_SAMPLES
+        settle = 512
+        max_diff = np.abs(sine_wave[settle:-delay] - reconstructed[settle + delay :]).max()
+        assert max_diff < 1e-4, f"Sine wave alignment error {max_diff:.6e} >= 1e-4"
+
+        # Verify frame boundary continuity
+        boundary_errors = [
+            abs(reconstructed[i * FRAME_SAMPLES] - sine_wave[i * FRAME_SAMPLES - delay])
+            for i in range(2, num_frames - 1)
+        ]
+        assert max(boundary_errors) < 1e-4, "Detected discontinuity at frame boundaries"
+
+    def test_streaming_impulse_delay_accuracy(
+        self, identity_enhancer: AIEnhancer
+    ) -> None:
+        """Verify an isolated impulse is reconstructed at the exact 256-sample delayed index."""
+        pulse = np.zeros(10 * FRAME_SAMPLES, dtype=np.float32)
+        impulse_idx = 300
+        pulse[impulse_idx] = 0.8
+
+        identity_enhancer.reset()
+        outs = [
+            identity_enhancer.process_frame(
+                pulse[i * FRAME_SAMPLES : (i + 1) * FRAME_SAMPLES]
+            )
+            for i in range(10)
+        ]
+        rec_pulse = np.concatenate(outs)
+
+        # Expected index is exactly impulse_idx + FRAME_SAMPLES
+        expected_peak = impulse_idx + FRAME_SAMPLES
+        actual_peak = int(np.argmax(np.abs(rec_pulse)))
+        assert actual_peak == expected_peak, f"Peak at {actual_peak}, expected {expected_peak}"
+        assert abs(rec_pulse[actual_peak] - 0.8) < 1e-4
+        assert np.abs(pulse[:-FRAME_SAMPLES] - rec_pulse[FRAME_SAMPLES:]).max() < 1e-4
+
 
 class TestValidationAndProtocols:
     """Tests for input validation and protocol adherence."""
@@ -233,6 +284,24 @@ class TestValidationAndProtocols:
                 np.zeros(FRAME_SAMPLES, dtype=np.float32),
                 ref_frame=np.zeros(50, dtype=np.float32),
             )
+
+    def test_no_direct_transforms_in_enhancer(self) -> None:
+        """Verify enhancer.py adheres to contract: no direct torch STFT/FFT/window calls."""
+        import re
+        from pathlib import Path
+
+        enhancer_path = (
+            Path(__file__).resolve().parent.parent
+            / "ai_engine"
+            / "models"
+            / "enhancer.py"
+        )
+        content = enhancer_path.read_text(encoding="utf-8")
+        matches = re.findall(
+            r"torch\.(?:stft|istft|fft\.rfft|fft\.irfft|hann_window)", content
+        )
+        assert not matches, f"Found direct transform calls in enhancer.py: {matches}"
+
 
 
 class TestModelIntegrations:
@@ -293,6 +362,21 @@ class TestModelIntegrations:
         assert out_frame.shape == (FRAME_SAMPLES,)
         assert out_frame.dtype == np.float32
         assert np.all(np.isfinite(out_frame))
+
+    def test_dccrn_reference_and_lengths(self) -> None:
+        """Verify DCCRN enhancer handles variable lengths and reference microphone input."""
+        torch.manual_seed(SEED)
+        dccrn = DCCRN().eval()
+        enhancer = AIEnhancer(dccrn, device="cpu")
+
+        rng = np.random.default_rng(SEED)
+        for length in [8000, 16000, 32000]:
+            noisy = rng.uniform(-0.5, 0.5, size=length).astype(np.float32)
+            ref = rng.uniform(-0.5, 0.5, size=length).astype(np.float32)
+            out = enhancer.enhance(noisy, reference=ref, sr=SAMPLE_RATE)
+            assert out.shape == noisy.shape
+            assert out.dtype == np.float32
+            assert np.all(np.isfinite(out))
 
 
 class TestStreamingEquivalence:
@@ -477,6 +561,38 @@ class TestBoundaryAndReset:
         assert all(b is None for b in enhancer._model_state.enc_buf)
         assert all(b is None for b in enhancer._model_state.dec_buf)
 
+    def test_dccrn_reset_clears_all_state_attributes(self) -> None:
+        """Verify reset() completely reinitializes DCCRN temporal buffers and complex recurrent states."""
+        torch.manual_seed(SEED)
+        dccrn = DCCRN().eval()
+        enhancer = AIEnhancer(dccrn, device="cpu")
+
+        rng = np.random.default_rng(SEED)
+        frame = rng.uniform(-0.5, 0.5, size=FRAME_SAMPLES).astype(np.float32)
+        enhancer.process_frame(frame)
+
+        # Buffers and state should now be populated
+        assert not np.all(enhancer._prev_frame == 0.0)
+        assert not np.all(enhancer._ola_buffer == 0.0)
+        assert isinstance(enhancer._model_state, _DCCRNStreamState)
+        assert enhancer._model_state.state_rr is not None
+        assert any(b is not None for b in enhancer._model_state.enc_buf)
+
+        # Call reset
+        enhancer.reset()
+
+        # Buffers and state must be pristine
+        assert np.all(enhancer._prev_frame == 0.0)
+        assert np.all(enhancer._ola_buffer == 0.0)
+        assert enhancer._prev_spec is None
+        assert isinstance(enhancer._model_state, _DCCRNStreamState)
+        assert enhancer._model_state.state_rr is None
+        assert enhancer._model_state.state_ii is None
+        assert enhancer._model_state.state_ri is None
+        assert enhancer._model_state.state_ir is None
+        assert all(b is None for b in enhancer._model_state.enc_buf)
+        assert all(b is None for b in enhancer._model_state.dec_buf)
+
 
 class TestLatencyAndBenchmarking:
     """Tests and measurements for execution latency vs algorithmic delay."""
@@ -514,3 +630,56 @@ class TestLatencyAndBenchmarking:
         # Execution latency must be well under the 16.0 ms budget (typically ~2-4 ms on CPU)
         assert median_ms < 16.0, f"Measured CPU execution latency {median_ms:.2f} ms exceeds 16 ms budget"
 
+
+class NanModel(nn.Module):
+    """Model that outputs NaNs for non-finite output testing."""
+
+    def forward(self, spec: torch.Tensor) -> torch.Tensor:
+        """Return NaN spectrum."""
+        return torch.full_like(spec, float("nan"))
+
+
+class TestDeviceSelectionAndNonFiniteHandling:
+    """Tests for device selection and non-finite output handling."""
+
+    def test_device_selection(self) -> None:
+        """Verify device selection logic for CPU, CUDA, and explicit devices."""
+        from ai_engine.models.enhancer import select_device
+
+        dev = select_device()
+        assert isinstance(dev, torch.device)
+
+        dev_cpu = select_device("cpu")
+        assert dev_cpu.type == "cpu"
+
+        dev_explicit = select_device(torch.device("cpu"))
+        assert dev_explicit.type == "cpu"
+
+    def test_non_finite_model_output_handling(self) -> None:
+        """Verify enhancer raises ValueError when wrapped model produces non-finite outputs."""
+        enhancer = AIEnhancer(NanModel(), device="cpu")
+        noisy = np.zeros(16000, dtype=np.float32)
+
+        with pytest.raises(ValueError, match="Enhanced audio contains non-finite values"):
+            enhancer.enhance(noisy)
+
+        frame = np.zeros(FRAME_SAMPLES, dtype=np.float32)
+        with pytest.raises(ValueError, match="Enhanced frame contains non-finite values"):
+            enhancer.process_frame(frame)
+
+    def test_multiple_successive_frames_stability(self) -> None:
+        """Verify streaming stability across 50 successive frames for both CRN and DCCRN."""
+        rng = np.random.default_rng(SEED)
+
+        for model_cls in (CRN, DCCRN):
+            torch.manual_seed(SEED)
+            model = model_cls().eval()
+            enhancer = AIEnhancer(model, device="cpu")
+            enhancer.reset()
+
+            for frame_idx in range(50):
+                frame = rng.uniform(-0.5, 0.5, size=FRAME_SAMPLES).astype(np.float32)
+                out = enhancer.process_frame(frame)
+                assert out.shape == (FRAME_SAMPLES,), f"Frame {frame_idx} shape mismatch"
+                assert out.dtype == np.float32, f"Frame {frame_idx} dtype mismatch"
+                assert np.all(np.isfinite(out)), f"Frame {frame_idx} contains non-finite values"

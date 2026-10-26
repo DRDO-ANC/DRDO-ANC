@@ -13,7 +13,7 @@ from torch import nn
 from ai_engine.models.crn import CRN
 from ai_engine.models.dccrn import DCCRN
 from ai_engine.models.stft import STFT
-from common.constants import FRAME_SAMPLES, N_FFT, SAMPLE_RATE, WIN_LENGTH
+from common.constants import FRAME_SAMPLES, N_FREQ, SAMPLE_RATE, WIN_LENGTH
 from common.interface import Enhancer, StreamingEnhancer, check_audio, check_enhanced
 
 logger = logging.getLogger(__name__)
@@ -179,6 +179,15 @@ class _GenericStreamState:
         self.recurrent_state: Any = None
 
 
+def select_device(device: torch.device | str | None = None) -> torch.device:
+    """Select compute device (CUDA when available, otherwise CPU, or explicit override)."""
+    if device is None:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if isinstance(device, str):
+        return torch.device(device)
+    return device
+
+
 class AIEnhancer(Enhancer, StreamingEnhancer):
     """Wrapper adapting neural network models for offline and streaming enhancement.
 
@@ -204,12 +213,7 @@ class AIEnhancer(Enhancer, StreamingEnhancer):
         max_context_frames: int = 50,
     ) -> None:
         """Initialize AIEnhancer with model, device, and internal buffers."""
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        elif isinstance(device, str):
-            self.device = torch.device(device)
-        else:
-            self.device = device
+        self.device = select_device(device)
 
         self.model = model
         if isinstance(self.model, nn.Module):
@@ -218,18 +222,24 @@ class AIEnhancer(Enhancer, StreamingEnhancer):
 
         self.stft = STFT().to(self.device)
         self.max_context_frames = max_context_frames
-        self._window = torch.hann_window(WIN_LENGTH).to(self.device)
 
         # Initialize streaming buffers and model states
         self._prev_frame: np.ndarray = np.zeros(FRAME_SAMPLES, dtype=np.float32)
         self._ola_buffer: np.ndarray = np.zeros(WIN_LENGTH, dtype=np.float32)
+        self._prev_spec: torch.Tensor | None = None
         self._model_state: Any = None
         self._init_streaming_state()
+
+    @property
+    def _window(self) -> torch.Tensor:
+        """Return window tensor from shared STFT buffer for backward-compatibility."""
+        return self.stft.window
 
     def _init_streaming_state(self) -> None:
         """Initialize or reset model-specific streaming state."""
         self._prev_frame = np.zeros(FRAME_SAMPLES, dtype=np.float32)
         self._ola_buffer = np.zeros(WIN_LENGTH, dtype=np.float32)
+        self._prev_spec = None
         if isinstance(self.model, CRN):
             self._model_state = _CRNStreamState(self.model)
         elif isinstance(self.model, DCCRN):
@@ -266,7 +276,7 @@ class AIEnhancer(Enhancer, StreamingEnhancer):
             self.model.eval()
 
         wave_tensor = torch.from_numpy(noisy).unsqueeze(0).to(self.device)
-        with torch.no_grad():
+        with torch.inference_mode():
             spec = self.stft(wave_tensor)
             enhanced_spec = self.model(spec)
             if isinstance(enhanced_spec, tuple):
@@ -285,13 +295,19 @@ class AIEnhancer(Enhancer, StreamingEnhancer):
             self.model.eval()
 
         wave_tensor = torch.from_numpy(noisy).unsqueeze(0).to(self.device)
-        with torch.no_grad():
+        with torch.inference_mode():
             spec = self.stft(wave_tensor)
             enhanced_spec = self.model(spec)
             if isinstance(enhanced_spec, tuple):
                 enhanced_spec = enhanced_spec[0]
 
-        return enhanced_spec.squeeze(0).cpu().numpy()
+        out_spec = enhanced_spec.squeeze(0).cpu().numpy()
+        if out_spec.ndim != 2 or out_spec.shape[0] != N_FREQ:
+            raise ValueError(f"Expected spectrum shape ({N_FREQ}, F), got {out_spec.shape}")
+        if not np.iscomplexobj(out_spec):
+            raise TypeError(f"Expected complex spectrum, got dtype {out_spec.dtype}")
+        return out_spec
+
 
     def reset(self) -> None:
         """Reset STFT analysis context, OLA synthesis buffers, and all recurrent/conv states."""
@@ -330,14 +346,13 @@ class AIEnhancer(Enhancer, StreamingEnhancer):
         block_512 = np.concatenate([self._prev_frame, frame])
         self._prev_frame = frame.copy()
 
-        # 2. Window and compute 512-point real FFT
-        block_tensor = torch.from_numpy(block_512).to(self.device)
-        win_tensor = block_tensor * self._window
-        spec_1d = torch.fft.rfft(win_tensor, n=N_FFT)
-        spec_frame = spec_1d.unsqueeze(0).unsqueeze(-1)  # [1, 257, 1]
+        # 2. Window and compute 1-frame spectrum via shared STFT module
+        block_tensor = torch.from_numpy(block_512).unsqueeze(0).to(self.device)
+        with torch.inference_mode():
+            spec_block = self.stft(block_tensor)
+            spec_frame = spec_block[:, :, 1:2]  # [1, 257, 1]
 
-        # 3. Model forward pass preserving exact recurrent and conv state
-        with torch.no_grad():
+            # 3. Model forward pass preserving exact recurrent and conv state
             if isinstance(self.model, CRN) and isinstance(self._model_state, _CRNStreamState):
                 enh_spec, self._model_state = _crn_stream_step(
                     self.model, spec_frame, self._model_state
@@ -369,17 +384,16 @@ class AIEnhancer(Enhancer, StreamingEnhancer):
                     enh_context = enh_context[0]
                 enh_spec = enh_context[..., -1:]
 
-        # 4. Synthesize via 512-point inverse real FFT
-        enh_spec_1d = enh_spec.squeeze(0).squeeze(-1)
-        recon_512 = torch.fft.irfft(enh_spec_1d, n=N_FFT).cpu().numpy().astype(np.float32)
+            # 4. Synthesize via shared STFT inverse module
+            if self._prev_spec is None:
+                self._prev_spec = torch.zeros_like(enh_spec)
+            spec_2f = torch.cat([self._prev_spec, enh_spec], dim=-1)
+            self._prev_spec = enh_spec
+            recon_frame = self.stft.inverse(spec_2f, length=FRAME_SAMPLES)
 
-        # 5. Overlap-add synthesis
-        self._ola_buffer += recon_512
-        out_chunk = self._ola_buffer[:FRAME_SAMPLES].copy()
+        out_chunk = recon_frame.squeeze(0).cpu().numpy().astype(np.float32)
+        self._ola_buffer[:FRAME_SAMPLES] = out_chunk
 
-        # 6. Shift OLA buffer by FRAME_SAMPLES (256 samples)
-        self._ola_buffer = np.concatenate(
-            [self._ola_buffer[FRAME_SAMPLES:], np.zeros(FRAME_SAMPLES, dtype=np.float32)]
-        )
-
+        if not np.all(np.isfinite(out_chunk)):
+            raise ValueError("Enhanced frame contains non-finite values")
         return out_chunk.astype(np.float32)
