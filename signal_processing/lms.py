@@ -6,6 +6,13 @@ import warnings
 
 import numpy as np
 
+from signal_processing._adaptive import (
+    validate_order,
+    validate_pair,
+    validate_positive,
+    validate_sr,
+)
+
 
 def enhance(
     noisy: np.ndarray,
@@ -16,35 +23,31 @@ def enhance(
     **params: object,
 ) -> np.ndarray:
     """Enhance noisy signal using the Least Mean Squares (LMS) adaptive filter."""
-    _ = sr, params
+    _ = params
     if reference is None:
         raise ValueError("Reference signal must be provided for LMS enhancement.")
-    if len(reference) != len(noisy):
-        raise ValueError(
-            f"Reference length ({len(reference)}) must match noisy length ({len(noisy)})."
-        )
-    if order <= 0:
-        raise ValueError(f"Filter order must be positive, got {order}.")
 
-    n_samples = len(noisy)
-    if n_samples == 0:
-        return np.empty(0, dtype=np.float32)
+    d_arr, x_arr = validate_pair(noisy, reference)
+    _ = validate_sr(sr)
+    order_val = validate_order(order)
+    mu_val = validate_positive(mu, "mu")
 
-    d = np.asarray(noisy, dtype=np.float64)
-    x = np.asarray(reference, dtype=np.float64)
+    n_samples = len(d_arr)
+    d = d_arr.astype(np.float64)
+    x = x_arr.astype(np.float64)
 
     ref_power = float(np.mean(x**2))
-    stability_bound = 2.0 / (order * ref_power) if ref_power > 0.0 else float("inf")
-    if mu >= stability_bound:
+    stability_bound = 2.0 / (order_val * ref_power) if ref_power > 0.0 else float("inf")
+    if mu_val >= stability_bound:
         warnings.warn(
-            f"Step size mu={mu} exceeds or equals stability bound 2/(order*mean(ref**2))={stability_bound:.6f}.",
+            f"Step size mu={mu_val} exceeds or equals stability bound 2/(order*mean(ref**2))={stability_bound:.6f}.",
             UserWarning,
             stacklevel=2,
         )
 
     e = np.zeros(n_samples, dtype=np.float64)
-    w = np.zeros(order, dtype=np.float64)
-    xb = np.zeros(order, dtype=np.float64)
+    w = np.zeros(order_val, dtype=np.float64)
+    xb = np.zeros(order_val, dtype=np.float64)
 
     for n in range(n_samples):
         xb[1:] = xb[:-1]
@@ -54,9 +57,9 @@ def enhance(
         err = d[n] - y
         e[n] = err
 
-        w += mu * err * xb
+        w += mu_val * err * xb
 
     out = e.astype(np.float32)
     if not np.all(np.isfinite(out)):
-        raise ValueError("LMS output contains NaN or infinite values.")
+        raise ValueError("LMS filter diverged: output contains NaN or infinite values.")
     return out

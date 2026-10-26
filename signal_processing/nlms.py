@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import numpy as np
 
+from signal_processing._adaptive import (
+    validate_order,
+    validate_pair,
+    validate_positive,
+    validate_sr,
+)
+
 
 def enhance(
     noisy: np.ndarray,
@@ -15,28 +22,25 @@ def enhance(
     **params: object,
 ) -> np.ndarray:
     """Enhance noisy signal using the Normalized Least Mean Squares (NLMS) adaptive filter."""
-    _ = sr, params
+    _ = params
     if reference is None:
         raise ValueError("Reference signal must be provided for NLMS enhancement.")
-    if len(reference) != len(noisy):
-        raise ValueError(
-            f"Reference length ({len(reference)}) must match noisy length ({len(noisy)})."
-        )
-    if not (0.0 < mu < 2.0):
-        raise ValueError(f"Step size mu must satisfy 0 < mu < 2, got {mu}.")
-    if order <= 0:
-        raise ValueError(f"Filter order must be positive, got {order}.")
 
-    n_samples = len(noisy)
-    if n_samples == 0:
-        return np.empty(0, dtype=np.float32)
+    d_arr, x_arr = validate_pair(noisy, reference)
+    _ = validate_sr(sr)
+    order_val = validate_order(order)
+    mu_val = validate_positive(mu, "mu")
+    if mu_val >= 2.0:
+        raise ValueError(f"mu must be < 2 for NLMS, got {mu!r}")
+    eps_val = validate_positive(eps, "eps")
 
-    d = np.asarray(noisy, dtype=np.float64)
-    x = np.asarray(reference, dtype=np.float64)
+    n_samples = len(d_arr)
+    d = d_arr.astype(np.float64)
+    x = x_arr.astype(np.float64)
     e = np.zeros(n_samples, dtype=np.float64)
 
-    w = np.zeros(order, dtype=np.float64)
-    xb = np.zeros(order, dtype=np.float64)
+    w = np.zeros(order_val, dtype=np.float64)
+    xb = np.zeros(order_val, dtype=np.float64)
 
     for n in range(n_samples):
         # Update delay line: xb[0] is most recent sample x[n]
@@ -47,10 +51,10 @@ def enhance(
         err = d[n] - y
         e[n] = err
 
-        norm = eps + np.dot(xb, xb)
-        w += (mu / norm) * err * xb
+        norm = eps_val + np.dot(xb, xb)
+        w += (mu_val / norm) * err * xb
 
     out = e.astype(np.float32)
     if not np.all(np.isfinite(out)):
-        raise ValueError("NLMS output contains NaN or infinite values.")
+        raise ValueError("NLMS filter diverged: output contains NaN or infinite values.")
     return out
