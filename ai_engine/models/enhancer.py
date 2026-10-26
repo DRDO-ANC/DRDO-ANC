@@ -396,6 +396,4 @@ class AIEnhancer(Enhancer, StreamingEnhancer):
 
         if not np.all(np.isfinite(out_chunk)):
             raise ValueError("Enhanced frame contains non-finite values")
-
         return out_chunk.astype(np.float32)
-

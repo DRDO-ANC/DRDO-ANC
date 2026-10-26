@@ -31,3 +31,14 @@ Final model selection between CRN and DCCRN must not be based on architectural i
 3. **Hardware & Latency Constraints:** Latency must be measured on the target deployment hardware (e.g., embedded / real-time streaming harness) with streaming state management enabled.
 4. **Trade-off Analysis:** A model with marginal PESQ/STOI gains must be evaluated against its latency and compute footprint within the real-time frame budget (e.g., DCCRN complex convolution overhead vs. CRN real-valued processing). The final candidate must satisfy both audio enhancement targets and real-time execution bounds.
 
+## AIEnhancer Integration Status
+
+Both baseline architectures (CRN and DCCRN) are unified under the shared `AIEnhancer` wrapper (`ai_engine/models/enhancer.py`):
+
+- **Protocol Conformance:** Implements both offline `Enhancer` and real-time `StreamingEnhancer` protocols defined in `common/interface.py`.
+- **Offline Waveform Enhancement:** `enhance(noisy, reference=None, sr=16000)` enforces 16 kHz sample rate, validates 1-D float32 input in `[-1, 1]`, processes the waveform via `STFT -> Model -> iSTFT`, and returns a float32 NumPy array of identical shape with finiteness checks.
+- **Spectral Enhancement:** `enhance_spec(noisy)` extracts complex spectrum `[257, F]` before inverse STFT.
+- **Stateful Streaming:** `process_frame(frame, ref_frame=None)` accepts 256 samples (16.0 ms frame), maintains layer-wise causal convolution buffers and LSTM hidden/cell states across frames, and reconstructs time-domain audio with 1-frame algorithmic delay.
+- **State Isolation:** `reset()` fully flushes analysis context, synthesis buffers, and internal recurrent/conv states for deterministic, leak-free streaming across calls.
+- **Shared Transform Contract:** All STFT and iSTFT transformations strictly delegate to the shared `STFT` class (`ai_engine/models/stft.py`), eliminating redundant direct PyTorch transform calls from the enhancer module.
+
