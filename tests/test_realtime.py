@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import builtins
 import importlib
+import importlib.util
 import sys
 import threading
 import time
@@ -606,16 +607,20 @@ class TestStreamLifecycle:
                 raise OSError("PortAudio library not found")
             return orig_import(name, *args, **kwargs)
 
+        spec = importlib.util.find_spec("ai_engine.inference.realtime.stream")
+        assert spec is not None
+        assert spec.loader is not None
+        isolated_mod = importlib.util.module_from_spec(spec)
+
         with patch.dict(sys.modules), patch("builtins.__import__", side_effect=fake_import):
             sys.modules.pop("sounddevice", None)
-            import ai_engine.inference.realtime.stream as stream_mod
+            spec.loader.exec_module(isolated_mod)
 
-            importlib.reload(stream_mod)
-            assert hasattr(stream_mod, "PassthroughStreamingEnhancer")
-            assert hasattr(stream_mod, "StreamStatistics")
-            assert hasattr(stream_mod, "list_audio_devices")
-            assert hasattr(stream_mod, "print_audio_devices")
-            assert hasattr(stream_mod, "run_stream")
+        assert hasattr(isolated_mod, "PassthroughStreamingEnhancer")
+        assert hasattr(isolated_mod, "StreamStatistics")
+        assert hasattr(isolated_mod, "list_audio_devices")
+        assert hasattr(isolated_mod, "print_audio_devices")
+        assert hasattr(isolated_mod, "run_stream")
 
 
 # ---------------------------------------------------------------------------

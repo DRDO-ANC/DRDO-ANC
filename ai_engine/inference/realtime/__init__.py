@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ai_engine.inference.realtime.latency import measure_latency
+    from ai_engine.inference.realtime.latency import LatencyResult, measure_latency
     from ai_engine.inference.realtime.stream import (
         PassthroughStreamingEnhancer,
         StreamStatistics,
@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "LatencyResult",
     "PassthroughStreamingEnhancer",
     "StreamStatistics",
     "list_audio_devices",
@@ -26,10 +27,10 @@ __all__ = [
 
 def __getattr__(name: str) -> Any:
     """Lazy-load module attributes to prevent runpy circular execution warnings."""
-    if name == "measure_latency":
-        from ai_engine.inference.realtime.latency import measure_latency
+    if name in {"LatencyResult", "measure_latency"}:
+        from ai_engine.inference.realtime import latency
 
-        return measure_latency
+        return getattr(latency, name)
     if name in {
         "PassthroughStreamingEnhancer",
         "StreamStatistics",

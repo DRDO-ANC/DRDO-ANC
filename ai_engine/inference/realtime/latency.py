@@ -33,11 +33,64 @@ from common.constants import FRAME_SAMPLES, SAMPLE_RATE, SEED
 from common.interface import StreamingEnhancer
 
 
+class LatencyResult(tuple):
+    """Result of latency and Real-Time Factor benchmark.
+
+    Provides tuple unpacking compatibility as `(latency_ms, rtf)` while also
+    exposing named attributes: `latency_ms`, `rtf`, `n_frames`, and `within_budget`.
+    """
+
+    latency_ms: float
+    rtf: float
+    n_frames: int
+    within_budget: bool
+
+    def __new__(
+        cls,
+        latency_ms: float,
+        rtf: float,
+        n_frames: int,
+        within_budget: bool,
+    ):
+        return super().__new__(cls, (latency_ms, rtf))
+
+    def __init__(
+        self,
+        latency_ms: float,
+        rtf: float,
+        n_frames: int,
+        within_budget: bool,
+    ) -> None:
+        self.latency_ms = latency_ms
+        self.rtf = rtf
+        self.n_frames = n_frames
+        self.within_budget = within_budget
+
+    def summary(self) -> str:
+        """Format a human-readable latency and RTF summary."""
+        frame_budget_ms = (FRAME_SAMPLES / SAMPLE_RATE) * 1000.0
+        budget_status = (
+            "PASSED (Within 16.0 ms budget)"
+            if self.within_budget
+            else "FAILED (Exceeds 16.0 ms budget)"
+        )
+        lines = [
+            "=================== Latency & RTF Benchmark ===================",
+            f"Measured Frames        : {self.n_frames}",
+            f"Frame Budget           : {frame_budget_ms:.2f} ms ({FRAME_SAMPLES} samples @ {SAMPLE_RATE} Hz)",
+            f"Avg Processing Latency : {self.latency_ms:.3f} ms",
+            f"Real-Time Factor (RTF) : {self.rtf:.3f}",
+            f"Budget Compliance      : {budget_status}",
+            "===============================================================",
+        ]
+        return "\n".join(lines)
+
+
 def measure_latency(
     enhancer: StreamingEnhancer,
     n_frames: int = 100,
     n_warmup: int = 10,
-) -> tuple[float, float]:
+) -> LatencyResult:
     """Measure the average per-frame algorithmic processing latency and RTF.
 
     Parameters
@@ -52,11 +105,9 @@ def measure_latency(
 
     Returns
     -------
-    tuple[float, float]
-        (latency_ms, rtf):
-        - latency_ms: Average processing time per 16 ms frame in milliseconds.
-        - rtf: Real-Time Factor (latency_ms / 16.0 ms). RTF < 1.0 indicates
-          faster-than-real-time performance.
+    LatencyResult
+        A dual-compatible result object behaving both as a 2-tuple `(latency_ms, rtf)`
+        and exposing attributes `latency_ms`, `rtf`, `n_frames`, and `within_budget`.
 
     Raises
     ------
@@ -108,7 +159,15 @@ def measure_latency(
     # Real-Time Factor
     rtf = latency_ms / frame_duration_ms
 
-    return latency_ms, rtf
+    # Budget verification
+    within_budget = bool(latency_ms <= frame_duration_ms)
+
+    return LatencyResult(
+        latency_ms=latency_ms,
+        rtf=rtf,
+        n_frames=n_frames,
+        within_budget=within_budget,
+    )
 
 
 def _validate_frame_output(out: Any) -> None:
@@ -123,3 +182,36 @@ def _validate_frame_output(out: Any) -> None:
         raise TypeError(f"Enhancer output dtype must be float32, got {out.dtype}")
     if not np.all(np.isfinite(out)):
         raise ValueError("Enhancer output contains non-finite values (NaN or Inf)")
+
+
+def main() -> None:
+    """CLI tool for benchmarking algorithmic latency of streaming enhancers."""
+    import argparse
+
+    from ai_engine.inference.realtime.stream import PassthroughStreamingEnhancer
+
+    parser = argparse.ArgumentParser(
+        description="DRDO-ANC Phase 2 Real-Time Latency & RTF Benchmark Tool"
+    )
+    parser.add_argument(
+        "--frames",
+        type=int,
+        default=100,
+        help="Number of 16 ms frames to benchmark (default: 100).",
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=10,
+        help="Number of warm-up frames to discard (default: 10).",
+    )
+    args = parser.parse_args()
+
+    enhancer = PassthroughStreamingEnhancer()
+    print("Benchmarking PassthroughStreamingEnhancer...")
+    result = measure_latency(enhancer, n_frames=args.frames, n_warmup=args.warmup)
+    print(result.summary())
+
+
+if __name__ == "__main__":
+    main()

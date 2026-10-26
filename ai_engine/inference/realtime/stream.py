@@ -1,6 +1,6 @@
 """Real-time audio streaming pipeline using sounddevice.
 
-This module provides the Phase 1 real-time streaming foundation for DRDO-ANC.
+This module provides the Phase 2 real-time streaming pipeline for DRDO-ANC.
 Audio frames (256 samples @ 16 kHz, 16 ms) are captured from an input device (microphone),
 processed by an enhancer implementing StreamingEnhancer, and sent to an output device (headphones).
 
@@ -60,6 +60,12 @@ class StreamStatistics:
         """Real-Time Factor based on 16 ms nominal frame budget."""
         budget_ms = (FRAME_SAMPLES / SAMPLE_RATE) * 1000.0
         return self.avg_latency_ms / budget_ms
+
+    @property
+    def within_budget(self) -> bool:
+        """Whether average processing latency is within the 16 ms frame budget."""
+        budget_ms = (FRAME_SAMPLES / SAMPLE_RATE) * 1000.0
+        return self.avg_latency_ms <= budget_ms
 
     def summary(self) -> str:
         """Format a human-readable performance summary."""
@@ -343,7 +349,7 @@ def main() -> None:
         return
 
     print("=" * 60)
-    print(" DRDO-ANC Real-Time Streaming (Phase 1 Passthrough)")
+    print(" DRDO-ANC Real-Time Streaming Pipeline (Phase 2)")
     print("=" * 60)
     print("SAFETY WARNING: Please wear WIRED HEADPHONES to prevent feedback howling.")
     print("Do not use live speakers during mic loopback streaming.")
