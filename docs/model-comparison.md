@@ -42,3 +42,27 @@ Both baseline architectures (CRN and DCCRN) are unified under the shared `AIEnha
 - **State Isolation:** `reset()` fully flushes analysis context, synthesis buffers, and internal recurrent/conv states for deterministic, leak-free streaming across calls.
 - **Shared Transform Contract:** All STFT and iSTFT transformations strictly delegate to the shared `STFT` class (`ai_engine/models/stft.py`), eliminating redundant direct PyTorch transform calls from the enhancer module.
 
+## Training Pipeline Workflow
+
+The Phase 4 training pipeline is fully configurable via YAML and invoked via CLI:
+
+```bash
+python -m ai_engine.training.train --config experiments/configs/<config_name>.yaml
+```
+
+### Configured Baselines
+
+- `experiments/configs/crn_baseline.yaml`: Causal magnitude mask CRN baseline (Adam optimizer, lr=0.001, SI-SNR loss).
+- `experiments/configs/dccrn_baseline.yaml`: Causal complex ratio mask DCCRN baseline (Complex Conv/LSTM, lr=0.001, SI-SNR loss).
+
+### Prerequisites & Environment Variables
+
+- `DATA_ROOT`: Root directory containing audio files referenced in the manifest (e.g. `DATA_ROOT=/path/to/dataset`).
+- `CKPT_DIR`: Target directory outside the repository for saving training checkpoints (e.g. `CKPT_DIR=/path/to/checkpoints`). Checkpoint files follow the naming convention `<config_name>_<git_hash>_best.pt` and `<config_name>_<git_hash>_latest.pt`.
+
+### Evidence Required for Final Model Selection
+
+Neither CRN nor DCCRN is declared superior at this stage. Final selection requires:
+1. **Completion of Training on Frozen Dataset**: Both models must be trained using identical seeds (`seed=42`) on the final frozen `dataset-v1` split (not the prototype `dev-clean` dataset).
+2. **Standard Evaluation Metrics**: Both checkpoints must be evaluated across test splits (seen and unseen noise) for SI-SNR (dB), standard SNR (dB), PESQ, and STOI.
+3. **End-to-End Streaming Latency**: Real-time streaming latency must be benchmarked on target edge/embedded devices using `AIEnhancer.process_frame()`, accounting for per-frame processing time within the real-time frame budget.

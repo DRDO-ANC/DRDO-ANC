@@ -8,6 +8,7 @@ import os
 import random
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -215,7 +216,9 @@ def train(config_path: str | Path, device_override: str | None = None) -> dict[s
         batch_size,
     )
 
+    training_start = time.monotonic()
     for epoch in range(1, epochs + 1):
+        epoch_start = time.monotonic()
         model.train()
         batch_losses: list[float] = []
         for batch in train_loader:
@@ -235,7 +238,11 @@ def train(config_path: str | Path, device_override: str | None = None) -> dict[s
 
         epoch_train_loss = float(np.mean(batch_losses)) if batch_losses else 0.0
         train_losses.append(epoch_train_loss)
-        logger.info("Epoch %d/%d - Train SI-SNR Loss: %.4f", epoch, epochs, epoch_train_loss)
+        epoch_elapsed = time.monotonic() - epoch_start
+        logger.info(
+            "Epoch %d/%d - Train SI-SNR Loss: %.4f (%.1fs)",
+            epoch, epochs, epoch_train_loss, epoch_elapsed,
+        )
 
         # Validation step
         if val_loader is not None and len(val_loader) > 0:
@@ -286,11 +293,30 @@ def train(config_path: str | Path, device_override: str | None = None) -> dict[s
                 )
                 logger.info("Saved best checkpoint to %s", best_ckpt_path)
 
+    # Save final-epoch checkpoint for resumability
+    latest_ckpt_path = ckpt_dir / f"{config_name}_{git_hash}_latest.pt"
+    torch.save(
+        {
+            "epoch": epochs,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "train_loss": train_losses[-1] if train_losses else 0.0,
+            "val_loss": val_losses[-1] if val_losses else None,
+            "config": config,
+            "git_hash": git_hash,
+        },
+        latest_ckpt_path,
+    )
+
+    total_time = time.monotonic() - training_start
+    logger.info("Training finished in %.1fs. Latest checkpoint: %s", total_time, latest_ckpt_path)
+
     return {
         "best_loss": best_loss,
         "train_losses": train_losses,
         "val_losses": val_losses,
         "checkpoint_path": str(best_ckpt_path),
+        "latest_checkpoint_path": str(latest_ckpt_path),
         "git_hash": git_hash,
     }
 

@@ -301,3 +301,61 @@ class TestAncDataset:
         # Because all three had identical initial ramp, synchronized crop means all three are equal
         assert torch.equal(item["noisy"], item["clean"])
         assert torch.equal(item["noisy"], item["reference"])
+
+    def test_missing_manifest_columns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Verify ValueError names the missing columns when required headers are absent."""
+        data_root = tmp_path / "bad_csv_data"
+        data_root.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("DATA_ROOT", str(data_root))
+
+        csv_path = tmp_path / "bad_header.csv"
+        with csv_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["id", "split", "clean_path"])
+            writer.writeheader()
+            writer.writerow({"id": "x", "split": "train", "clean_path": "c.wav"})
+
+        with pytest.raises(ValueError, match="missing required columns"):
+            AncDataset(csv_path, split="train")
+
+    def test_audio_load_failure_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Verify a clear RuntimeError when a referenced audio file does not exist."""
+        data_root = tmp_path / "missing_audio"
+        data_root.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("DATA_ROOT", str(data_root))
+
+        row = {
+            "id": "missing_01",
+            "speaker_id": "spk1",
+            "clean_path": "clean/missing.wav",
+            "noise_path": "noise/missing.wav",
+            "reference_path": "ref/missing.wav",
+            "noise_type": "white",
+            "snr_db": "0.0",
+            "split": "train",
+            "mixed_path": "mixed/missing.wav",
+        }
+        csv_path = tmp_path / "missing.csv"
+        with csv_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+            writer.writeheader()
+            writer.writerow(row)
+
+        ds = AncDataset(csv_path, split="train")
+        assert len(ds) == 1
+        with pytest.raises(RuntimeError, match="Failed to load.*missing_01"):
+            ds[0]
+
+    def test_invalid_data_root_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Verify ValueError when DATA_ROOT points to a non-existent directory."""
+        monkeypatch.setenv("DATA_ROOT", str(tmp_path / "nonexistent_dir"))
+        csv_path = tmp_path / "dummy.csv"
+        csv_path.write_text("id,split,clean_path,mixed_path,reference_path\n")
+
+        with pytest.raises(ValueError, match="not a directory"):
+            AncDataset(csv_path, split="train")
