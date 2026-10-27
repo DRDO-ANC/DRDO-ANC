@@ -483,6 +483,8 @@ INVALID_POSITIVE_VALUES = [
     pytest.param(0.0, id="zero_float"),
     pytest.param(-1.0, id="negative_float"),
     pytest.param(-1, id="negative_int"),
+    pytest.param(10**1000, id="overflow_large_int"),
+    pytest.param(-(10**1000), id="overflow_negative_large_int"),
     pytest.param("0.5", id="string"),
     pytest.param(None, id="none"),
     pytest.param([1.0], id="list"),
@@ -517,11 +519,11 @@ def test_validate_positive_accepts_valid(good_value) -> None:
 
 @pytest.mark.parametrize(
     "bad_value",
-    [1 + 2j, np.complex128(1.0), True, np.array([1.0]), "0.5", None],
+    [1 + 2j, np.complex128(1.0), True, np.array([1.0]), "0.5", None, 10**1000],
 )
 @pytest.mark.parametrize("module", [lms, nlms])
 def test_enhance_rejects_invalid_mu(module, bad_value) -> None:
-    """Verify enhance() raises ValueError for invalid mu types."""
+    """Verify enhance() raises ValueError for invalid mu types and unrepresentable values."""
     noisy = np.ones(100, dtype=np.float32)
     ref = np.ones(100, dtype=np.float32)
     with pytest.raises(ValueError):
@@ -530,10 +532,10 @@ def test_enhance_rejects_invalid_mu(module, bad_value) -> None:
 
 @pytest.mark.parametrize(
     "bad_value",
-    [1 + 2j, np.complex128(1.0), True, np.array([1.0]), "0.5", None],
+    [1 + 2j, np.complex128(1.0), True, np.array([1.0]), "0.5", None, 10**1000],
 )
 def test_enhance_rejects_invalid_eps(bad_value) -> None:
-    """Verify nlms.enhance() raises ValueError for invalid eps types."""
+    """Verify nlms.enhance() raises ValueError for invalid eps types and unrepresentable values."""
     noisy = np.ones(100, dtype=np.float32)
     ref = np.ones(100, dtype=np.float32)
     with pytest.raises(ValueError):

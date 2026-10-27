@@ -78,14 +78,21 @@ def validate_positive(value: object, name: str) -> float:
     """Validate value is a real, scalar, finite, strictly positive numeric value.
 
     Rejects complex numbers, NumPy complex scalars, booleans, arrays,
-    NaN, infinity, zero, negative values, and non-numeric types with
-    ``ValueError``.
+    NaN, infinity, zero, negative values, unrepresentable numbers, and
+    non-numeric types with ``ValueError``.
     """
     if (
         isinstance(value, (bool, complex, np.complexfloating))
         or not isinstance(value, (int, float, numbers.Real, np.integer, np.floating))
-        or not np.isfinite(value)
-        or value <= 0
     ):
+        raise ValueError(f"{name} must be a finite number > 0, got {value!r}")  # noqa: TRY004
+
+    try:
+        val_f = float(value)
+    except (TypeError, OverflowError, ValueError) as err:
+        raise ValueError(f"{name} must be a finite number > 0, got {value!r}") from err
+
+    if not np.isfinite(val_f) or val_f <= 0.0:
         raise ValueError(f"{name} must be a finite number > 0, got {value!r}")
-    return float(value)
+
+    return val_f
