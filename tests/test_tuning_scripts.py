@@ -64,19 +64,17 @@ def test_time_nlms_vs_rls_main_quick(capsys: pytest.CaptureFixture[str]) -> None
 
 
 def test_time_nlms_vs_rls_seconds_validation(capsys: pytest.CaptureFixture[str]) -> None:
-    """Verify time_nlms_vs_rls CLI rejects zero and negative seconds, and accepts valid positive values."""
+    """Verify time_nlms_vs_rls CLI rejects zero, negative, inf, and nan seconds."""
     mod = _load_script_module("time_nlms_vs_rls")
-    with pytest.raises(SystemExit) as exc_zero:
-        mod.main(["--seconds", "0.0"])
-    assert exc_zero.value.code != 0
-    err_zero = capsys.readouterr().err
-    assert "--seconds must be strictly positive" in err_zero
 
-    with pytest.raises(SystemExit) as exc_neg:
-        mod.main(["--seconds", "-1.5"])
-    assert exc_neg.value.code != 0
-    err_neg = capsys.readouterr().err
-    assert "--seconds must be strictly positive" in err_neg
+    for bad_val, label in [("0.0", "zero"), ("-1.5", "negative"), ("inf", "inf"), ("nan", "nan")]:
+        with pytest.raises(SystemExit) as exc_info:
+            mod.main(["--seconds", bad_val])
+        assert exc_info.value.code != 0, f"Expected nonzero exit for --seconds {label}"
+        err = capsys.readouterr().err
+        assert "--seconds must be finite and strictly positive" in err, (
+            f"Missing validation message for --seconds {label}, got: {err!r}"
+        )
 
     # Valid positive value succeeds
     ret = mod.main(["--quick", "--seconds", "0.1"])

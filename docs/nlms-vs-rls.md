@@ -98,21 +98,33 @@ Execution timing benchmarks were conducted over 1.0 s of 16 kHz audio (16,000 sa
 
 ## Convergence
 
-Convergence was evaluated on a 2-second acoustic ANC setup (16-tap FIR primary path with 3-sample pure delay at 16 kHz sampling rate). The metric computes a 100 ms rectangular moving-average of the error power ($W = 1,600$ samples) across all valid windows $k$:
+Convergence was evaluated on a 2-second acoustic ANC setup (16-tap FIR primary path with 3-sample pure delay at 16 kHz sampling rate). The metric computes a 100 ms rectangular moving-average of the error power ($W = 1{,}600$ samples) across all valid windows $k$:
 $$\bar{P}_e[k] = \frac{1}{W} \sum_{i=0}^{W-1} e^2[k + i]$$
 The starting error power is defined as the first 100 ms window average ($\bar{P}_e[0]$). The benchmark records the index of the first window $k^*$ whose average error power is at least 20 dB below $\bar{P}_e[0]$ ($\bar{P}_e[k^*] \le 0.01 \cdot \bar{P}_e[0]$).
 
+### Interpretation of Reported Values
+
+The reported metric has two components:
+
+- **Window-Start ($k^*$):** The sample index at which the leading edge of the 100 ms sliding window first satisfies the $-20\text{ dB}$ threshold. This tells us the earliest point at which the error power within the subsequent 100 ms window drops below the threshold.
+- **Confirmed-At ($k^* + W$):** The sample at which the full 100 ms observation window has been received. Convergence can only be verified in a causal system at this point, since the entire window must be observed before the average can be computed.
+
+All millisecond values represent **audio sample counts converted to equivalent continuous audio duration** ($\text{samples} / f_s \times 1{,}000\text{ ms}$ at $f_s = 16{,}000\text{ Hz}$), NOT elapsed wall-clock benchmarking runtime.
+
 ### Measured Convergence Metrics
 
-| Filter Length | NLMS ($\mu=0.5$) | RLS ($\lambda=0.999$, $\delta=1.0$) |
-|---------------|------------------|-------------------------------------|
-| 32            | 187 samples (11.7 ms equivalent) | 64 samples (4.0 ms equivalent) |
-| 64            | 314 samples (19.6 ms equivalent) | 100 samples (6.2 ms equivalent) |
+| Filter Length | Method             | Window-Start Sample | Window-Start (ms) | Confirmed-At Sample | Confirmed-At (ms) |
+|---------------|--------------------|---------------------|--------------------|---------------------|--------------------|
+| 32            | NLMS ($\mu=0.5$)   | 187                 | 11.7               | 1787                | 111.7              |
+| 32            | RLS ($\lambda=0.999$, $\delta=1.0$) | 64 | 4.0                | 1664                | 104.0              |
+| 64            | NLMS ($\mu=0.5$)   | 314                 | 19.6               | 1914                | 119.6              |
+| 64            | RLS ($\lambda=0.999$, $\delta=1.0$) | 100 | 6.2               | 1700                | 106.2              |
 
-### Clarification of Reported Times:
-- The reported millisecond values ($4.0\text{ ms}$ and $11.7\text{ ms}$ for order 32; $6.2\text{ ms}$ and $19.6\text{ ms}$ for order 64) represent **audio sample counts converted to equivalent continuous audio duration** ($\text{samples} / f_s \times 1,000\text{ ms}$ at $f_s = 16,000\text{ Hz}$), NOT elapsed wall-clock benchmarking runtime.
-- Specifically, the window leading edge reaches the -20 dB attenuation threshold at sample offset 64 ($4.0\text{ ms}$ of incoming audio) for RLS and sample offset 187 ($11.7\text{ ms}$ of incoming audio) for NLMS at order 32. The full 100 ms analysis window covering that attenuated segment spans samples $[64, 1664]$ ($104.0\text{ ms}$) for RLS and $[187, 1787]$ ($111.7\text{ ms}$) for NLMS.
-- In both cases, adaptation reaches the -20 dB threshold within the very first 20 ms hop ($320\text{ samples}$), confirming that RLS's faster convergence occurs on a sub-hop scale that provides minimal perceptual benefit in continuous ANC.
+### Convergence Summary
+
+- RLS adaptation drives the error power into the qualifying window earlier than NLMS (e.g. window-start at 4.0 ms vs 11.7 ms for order 32), reflecting its faster transient response.
+- However, in both cases **convergence cannot be confirmed until the full 100 ms observation window has elapsed** — at sample 1664 (104.0 ms) for RLS and sample 1787 (111.7 ms) for NLMS at order 32. This 100 ms latency dominates the difference in window-start offsets.
+- For continuous ANC operating on 20 ms hops, neither algorithm's convergence can be confirmed within a single hop; confirmation requires roughly five hops of observation in both cases.
 
 ## Recommendation
 
@@ -120,7 +132,7 @@ We propose to investigate RLS exclusively as an optional or hybrid adaptation mo
 
 ### Supporting Evidence and Rationale:
 1. **Latency and Budget Risk:** NLMS uses less than 0.89 ms per 20 ms hop across all orders ($N \le 256$), leaving >95% headroom for STFT analysis, neural enhancement stages, and I/O buffer management. At order 256, unvectorized Python RLS exceeds the frame budget (30.183 ms > 20 ms). Even at order 64, RLS consumes 3.83 ms per hop (4.8x more CPU than NLMS).
-2. **Diminishing Convergence Benefit:** While RLS converges in 4.0 ms (versus 11.7 ms for NLMS at $N=32$), both filters achieve 20 dB error power attenuation well within 20 ms (a single hop). For continuous speech enhancement and stationary/slowly-varying acoustic noise paths, a 7.7 ms faster initial convergence does not justify a $3\times$ to $5\times$ computational overhead.
+2. **Diminishing Convergence Benefit:** While the RLS window-start offset is earlier (4.0 ms vs 11.7 ms at $N=32$), convergence confirmation for both algorithms requires the full 100 ms observation window (104.0 ms vs 111.7 ms). For continuous speech enhancement and stationary/slowly-varying acoustic noise paths, a 7.7 ms earlier window-start does not justify a $3\times$ to $5\times$ computational overhead.
 3. **Numerical Stability:** The standard RLS Riccati update is susceptible to loss of positive definiteness under finite-precision arithmetic unless square-root or QR-decomposition forms (e.g. QR-RLS) are adopted, adding further implementation complexity.
 
 ## Tuned Defaults

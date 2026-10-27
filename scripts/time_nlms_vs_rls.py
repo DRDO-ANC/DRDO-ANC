@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import math
 import os
 import platform
 import time
@@ -245,19 +246,41 @@ def run_benchmark(
     ref_c = rng_c.standard_normal(conv_samples).astype(np.float32)
     noise_c = signal.lfilter(fir, [1.0], ref_c).astype(np.float32)
 
-    conv_headers = ["Filter Length", "NLMS (mu=0.5)", "RLS (lambda=0.999)"]
+    win_samples = int(sr * 100.0 / 1000.0)  # 1600 samples for 100 ms window
+    conv_headers = [
+        "Filter Length",
+        "Method",
+        "Window-Start Sample",
+        "Window-Start (ms)",
+        "Confirmed-At Sample",
+        "Confirmed-At (ms)",
+    ]
     conv_rows = []
 
     for L in [32, 64]:
         e_nlms = local_nlms_filter(noise_c, ref_c, order=L, mu=0.5)
         c_nlms = compute_convergence_samples(e_nlms, sr=sr, drop_db=20.0, win_ms=100.0)
-        str_nlms = f"{c_nlms} samples ({c_nlms / sr * 1000.0:.1f} ms)" if c_nlms is not None else "not reached"
+        if c_nlms is not None:
+            confirmed_nlms = c_nlms + win_samples
+            conv_rows.append([
+                str(L), "NLMS (mu=0.5)",
+                str(c_nlms), f"{c_nlms / sr * 1000.0:.1f}",
+                str(confirmed_nlms), f"{confirmed_nlms / sr * 1000.0:.1f}",
+            ])
+        else:
+            conv_rows.append([str(L), "NLMS (mu=0.5)", "N/A", "N/A", "N/A", "N/A"])
 
         e_rls = throwaway_rls_filter(noise_c, ref_c, order=L, lmbda=0.999, delta=1.0)
         c_rls = compute_convergence_samples(e_rls, sr=sr, drop_db=20.0, win_ms=100.0)
-        str_rls = f"{c_rls} samples ({c_rls / sr * 1000.0:.1f} ms)" if c_rls is not None else "not reached"
-
-        conv_rows.append([str(L), str_nlms, str_rls])
+        if c_rls is not None:
+            confirmed_rls = c_rls + win_samples
+            conv_rows.append([
+                str(L), "RLS (lambda=0.999)",
+                str(c_rls), f"{c_rls / sr * 1000.0:.1f}",
+                str(confirmed_rls), f"{confirmed_rls / sr * 1000.0:.1f}",
+            ])
+        else:
+            conv_rows.append([str(L), "RLS (lambda=0.999)", "N/A", "N/A", "N/A", "N/A"])
 
     conv_table = format_table(conv_headers, conv_rows)
 
@@ -282,8 +305,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    if args.seconds <= 0.0:
-        parser.error(f"--seconds must be strictly positive (> 0), got {args.seconds}")
+
+    if not math.isfinite(args.seconds) or args.seconds <= 0.0:
+        parser.error(f"--seconds must be finite and strictly positive (> 0), got {args.seconds}")
 
     core_table, api_table, conv_table, env_info = run_benchmark(
         seed=args.seed,
@@ -308,7 +332,9 @@ def main(argv: list[str] | None = None) -> int:
         print(api_table)
         print("\n")
 
-    print("### Convergence Time (-20 dB Error Power Drop, 100 ms Averaging Window)\n")
+    print("### Convergence (-20 dB Error Power Drop, 100 ms Averaging Window)\n")
+    print("Window-Start: sample index where the 100 ms sliding window first drops below -20 dB.")
+    print("Confirmed-At: sample at which the full window has been observed (window-start + 1600 samples).\n")
     print(conv_table)
     print("\n")
 
