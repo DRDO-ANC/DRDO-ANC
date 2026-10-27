@@ -94,18 +94,25 @@ Execution timing benchmarks were conducted over 1.0 s of 16 kHz audio (16,000 sa
 ### Budget Status Analysis
 - **NLMS Algorithm-Only:** Remains well within budget across all filter orders, using at most **0.881 ms per 20 ms hop** (4.41% of the 20 ms frame budget at $N=256$).
 - **RLS Algorithm-Only:** Remains within budget up to $N=128$ (7.742 ms per hop), but at $N=256$ it surges to **30.183 ms per 20 ms hop** (RTF = 1.5092), decisively **OVER** budget by 150.9%.
-- **Validation Overhead:** The official NLMS API validation overhead (`validate_pair`, `validate_order`, `validate_positive`) is negligible on 1.0 s buffers (~0.05 ms total per call), confirming that algorithm loop execution dominates runtime.
+- **Validation Overhead Analysis:** To evaluate whether wrapper checks introduce meaningful latency, 30 paired measurements of the official NLMS API and the equivalent algorithm-only update loop were performed on identical 1.0 s buffers (16,000 samples at order 64). The paired difference $(t_{\text{API}} - t_{\text{Core}})$ exhibited a median difference of $0.12\text{ ms}$, with standard deviation of $2.60\text{ ms}$ and interquartile range (IQR) of $2.62\text{ ms}$ (individual differences ranged from $-7.48\text{ ms}$ to $+7.76\text{ ms}$ due to operating system scheduling and Python runtime jitter). Dedicated micro-benchmarks measuring the standalone validation routines (`validate_pair`, `validate_order`, `validate_positive`) showed a median execution time of $0.016\text{ ms}$ ($\text{IQR} < 0.001\text{ ms}$). Because this validation overhead is dwarfed by run-to-run system jitter, we do not claim a single fixed overhead figure; rather, both implementations perform essentially identically within measurement noise, and core filtering dominates total execution time.
 
 ## Convergence
 
-Convergence was evaluated on a 2-second acoustic ANC setup (16-tap FIR primary path with 3-sample pure delay). The metric reports the number of elapsed audio samples required for the 100 ms moving-average error power to drop 20 dB below its starting level:
+Convergence was evaluated on a 2-second acoustic ANC setup (16-tap FIR primary path with 3-sample pure delay at 16 kHz sampling rate). The metric computes a 100 ms rectangular moving-average of the error power ($W = 1,600$ samples) across all valid windows $k$:
+$$\bar{P}_e[k] = \frac{1}{W} \sum_{i=0}^{W-1} e^2[k + i]$$
+The starting error power is defined as the first 100 ms window average ($\bar{P}_e[0]$). The benchmark records the index of the first window $k^*$ whose average error power is at least 20 dB below $\bar{P}_e[0]$ ($\bar{P}_e[k^*] \le 0.01 \cdot \bar{P}_e[0]$).
 
-| Filter Length | NLMS ($\mu=0.5$)      | RLS ($\lambda=0.999$, $\delta=1.0$) |
-|---------------|-----------------------|-------------------------------------|
-| 32            | 187 samples (11.7 ms) | 64 samples (4.0 ms)                 |
-| 64            | 314 samples (19.6 ms) | 100 samples (6.2 ms)                |
+### Measured Convergence Metrics
 
-RLS achieves 20 dB attenuation in approximately one-third of the time required by NLMS (4.0 ms vs 11.7 ms at order 32, and 6.2 ms vs 19.6 ms at order 64).
+| Filter Length | NLMS ($\mu=0.5$) | RLS ($\lambda=0.999$, $\delta=1.0$) |
+|---------------|------------------|-------------------------------------|
+| 32            | 187 samples (11.7 ms equivalent) | 64 samples (4.0 ms equivalent) |
+| 64            | 314 samples (19.6 ms equivalent) | 100 samples (6.2 ms equivalent) |
+
+### Clarification of Reported Times:
+- The reported millisecond values ($4.0\text{ ms}$ and $11.7\text{ ms}$ for order 32; $6.2\text{ ms}$ and $19.6\text{ ms}$ for order 64) represent **audio sample counts converted to equivalent continuous audio duration** ($\text{samples} / f_s \times 1,000\text{ ms}$ at $f_s = 16,000\text{ Hz}$), NOT elapsed wall-clock benchmarking runtime.
+- Specifically, the window leading edge reaches the -20 dB attenuation threshold at sample offset 64 ($4.0\text{ ms}$ of incoming audio) for RLS and sample offset 187 ($11.7\text{ ms}$ of incoming audio) for NLMS at order 32. The full 100 ms analysis window covering that attenuated segment spans samples $[64, 1664]$ ($104.0\text{ ms}$) for RLS and $[187, 1787]$ ($111.7\text{ ms}$) for NLMS.
+- In both cases, adaptation reaches the -20 dB threshold within the very first 20 ms hop ($320\text{ samples}$), confirming that RLS's faster convergence occurs on a sub-hop scale that provides minimal perceptual benefit in continuous ANC.
 
 ## Recommendation
 

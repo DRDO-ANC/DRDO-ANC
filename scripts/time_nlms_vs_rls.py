@@ -282,6 +282,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    if args.seconds <= 0.0:
+        parser.error(f"--seconds must be strictly positive (> 0), got {args.seconds}")
+
     core_table, api_table, conv_table, env_info = run_benchmark(
         seed=args.seed,
         seconds=args.seconds,

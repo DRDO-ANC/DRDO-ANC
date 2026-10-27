@@ -63,6 +63,26 @@ def test_time_nlms_vs_rls_main_quick(capsys: pytest.CaptureFixture[str]) -> None
     assert "RLS (algorithm-only)" in out
 
 
+def test_time_nlms_vs_rls_seconds_validation(capsys: pytest.CaptureFixture[str]) -> None:
+    """Verify time_nlms_vs_rls CLI rejects zero and negative seconds, and accepts valid positive values."""
+    mod = _load_script_module("time_nlms_vs_rls")
+    with pytest.raises(SystemExit) as exc_zero:
+        mod.main(["--seconds", "0.0"])
+    assert exc_zero.value.code != 0
+    err_zero = capsys.readouterr().err
+    assert "--seconds must be strictly positive" in err_zero
+
+    with pytest.raises(SystemExit) as exc_neg:
+        mod.main(["--seconds", "-1.5"])
+    assert exc_neg.value.code != 0
+    err_neg = capsys.readouterr().err
+    assert "--seconds must be strictly positive" in err_neg
+
+    # Valid positive value succeeds
+    ret = mod.main(["--quick", "--seconds", "0.1"])
+    assert ret == 0
+
+
 def test_missing_module_handling(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that missing signal_processing modules return 0 and print 'skipped:'."""
     # Hide any signal_processing module
