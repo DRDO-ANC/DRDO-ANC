@@ -11,12 +11,6 @@ from typing import Any
 import numpy as np
 from scipy import signal
 
-# Optional soundfile import
-try:
-    import soundfile as sf
-except ImportError:
-    sf = None
-
 
 def generate_clean_signal(
     sig_type: str,
@@ -548,21 +542,15 @@ def analyze_sweep_results(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run parameter sweep and evaluation CLI."""
-    parser = argparse.ArgumentParser(description="Tune classical DSP filter parameters.")
+    """Run parameter sweep and evaluation CLI (uses synthetic data only)."""
+    parser = argparse.ArgumentParser(
+        description="Tune classical DSP filter parameters using synthetic test signals."
+    )
     parser.add_argument("--seed", type=int, default=42, help="Base random seed (default: 42)")
     parser.add_argument("--quick", action="store_true", help="Run fast reduced parameter sweep")
     parser.add_argument("--out-csv", type=str, default=None, help="Optional output CSV path")
-    parser.add_argument("--manifest", type=str, default=None, help="Optional manifest CSV path")
-    parser.add_argument("--data-root", type=str, default=None, help="Optional dataset root directory")
 
     args = parser.parse_args(argv)
-
-    if args.manifest or args.data_root:
-        if sf is None:
-            print("Notice: soundfile is not installed; ignoring manifest and staying on synthetic dataset.")
-        else:
-            print(f"Notice: manifest/data-root requested ({args.manifest}), running synthetic benchmark subset.")
 
     base_seed = args.seed
     seeds = [base_seed] if args.quick else [base_seed, base_seed + 1]

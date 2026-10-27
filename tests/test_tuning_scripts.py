@@ -43,15 +43,24 @@ def test_tune_dsp_main_quick(capsys: pytest.CaptureFixture[str]) -> None:
     assert ("skipped:" in out) or ("Results:" in out)
 
 
+def test_tune_dsp_rejects_unsupported_dataset_options() -> None:
+    """Verify tune_dsp CLI rejects removed/unsupported --manifest and --data-root options."""
+    mod = _load_script_module("tune_dsp")
+    with pytest.raises(SystemExit):
+        mod.main(["--manifest", "some_manifest.csv"])
+    with pytest.raises(SystemExit):
+        mod.main(["--data-root", "/some/path"])
+
+
 def test_time_nlms_vs_rls_main_quick(capsys: pytest.CaptureFixture[str]) -> None:
-    """Smoke-test time_nlms_vs_rls.py main(--quick) returns 0 and prints a markdown table."""
+    """Smoke-test time_nlms_vs_rls.py main(--quick) returns 0 and prints algorithm-only markdown table."""
     mod = _load_script_module("time_nlms_vs_rls")
     ret = mod.main(["--quick", "--seed", "42", "--seconds", "0.2"])
     assert ret == 0
     out = capsys.readouterr().out
     assert "Filter Length" in out
-    assert "NLMS" in out
-    assert "RLS" in out
+    assert "NLMS (algorithm-only)" in out
+    assert "RLS (algorithm-only)" in out
 
 
 def test_missing_module_handling(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:

@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 from scipy import signal
 
-# Lazy attempt to import signal_processing.nlms
+# Lazy attempt to import signal_processing.nlms for optional end-to-end API timings
 _HAS_OFFICIAL_NLMS = False
 try:
     from signal_processing import nlms as official_nlms  # type: ignore
@@ -29,7 +29,7 @@ def local_nlms_filter(
     mu: float = 0.5,
     eps: float = 1e-6,
 ) -> np.ndarray:
-    """Enhance noisy signal using fallback local copy of NLMS update."""
+    """Enhance noisy signal using equivalent algorithm-only NLMS update loop."""
     n_samples = len(noisy)
     d = noisy.astype(np.float64)
     x = reference.astype(np.float64)
@@ -51,19 +51,6 @@ def local_nlms_filter(
     return e.astype(np.float32)
 
 
-def run_nlms(
-    noisy: np.ndarray,
-    reference: np.ndarray,
-    order: int = 64,
-    mu: float = 0.5,
-    eps: float = 1e-6,
-) -> np.ndarray:
-    """Run NLMS using signal_processing.nlms if importable, else local copy."""
-    if _HAS_OFFICIAL_NLMS and official_nlms is not None:
-        return official_nlms.enhance(noisy, reference=reference, sr=16000, order=order, mu=mu, eps=eps)
-    return local_nlms_filter(noisy, reference, order=order, mu=mu, eps=eps)
-
-
 def throwaway_rls_filter(
     noisy: np.ndarray,
     reference: np.ndarray,
@@ -71,7 +58,7 @@ def throwaway_rls_filter(
     lmbda: float = 0.999,
     delta: float = 1.0,
 ) -> np.ndarray:
-    """Enhance noisy signal using throwaway RLS filter (throwaway, for timing only)."""
+    """Enhance noisy signal using equivalent algorithm-only RLS update loop (throwaway, for timing only)."""
     n_samples = len(noisy)
     d = noisy.astype(np.float64)
     x = reference.astype(np.float64)
@@ -149,7 +136,7 @@ def run_benchmark(
     seconds: float = 1.0,
     quick: bool = False,
     sr: int = 16000,
-) -> tuple[str, str, dict[str, str]]:
+) -> tuple[str, str | None, str, dict[str, str]]:
     """Run execution timing and convergence analysis for NLMS vs RLS."""
     n_samples = int(seconds * sr)
     rng = np.random.default_rng(seed)
@@ -173,18 +160,18 @@ def run_benchmark(
         "ms / 20 ms hop",
         "Budget Status",
     ]
-    timing_rows = []
+    core_timing_rows = []
 
     # Warmup length
     warm_samples = min(n_samples, 1000)
 
     for L in lengths:
-        # NLMS
-        run_nlms(noisy[:warm_samples], ref[:warm_samples], order=L, mu=0.5)
+        # 1. Algorithm-only NLMS update loop
+        local_nlms_filter(noisy[:warm_samples], ref[:warm_samples], order=L, mu=0.5)
         nlms_times = []
         for _ in range(3):
             t0 = time.perf_counter()
-            _ = run_nlms(noisy, ref, order=L, mu=0.5)
+            _ = local_nlms_filter(noisy, ref, order=L, mu=0.5)
             nlms_times.append(time.perf_counter() - t0)
         best_nlms = min(nlms_times)
         rtf_nlms = best_nlms / seconds
@@ -192,16 +179,16 @@ def run_benchmark(
         hop_nlms = (best_nlms / n_samples) * hop_samples * 1e3
         status_nlms = "WITHIN" if hop_nlms <= budget_ms else "OVER"
 
-        timing_rows.append([
+        core_timing_rows.append([
             str(L),
-            "NLMS",
+            "NLMS (algorithm-only)",
             f"{rtf_nlms:.4f}",
             f"{us_nlms:.2f}",
             f"{hop_nlms:.3f}",
             status_nlms,
         ])
 
-        # RLS (throwaway, for timing only)
+        # 2. Algorithm-only RLS update loop (throwaway, for timing only)
         throwaway_rls_filter(noisy[:warm_samples], ref[:warm_samples], order=L, lmbda=0.999, delta=1.0)
         rls_times = []
         for _ in range(3):
@@ -214,16 +201,42 @@ def run_benchmark(
         hop_rls = (best_rls / n_samples) * hop_samples * 1e3
         status_rls = "WITHIN" if hop_rls <= budget_ms else "OVER"
 
-        timing_rows.append([
+        core_timing_rows.append([
             str(L),
-            "RLS",
+            "RLS (algorithm-only)",
             f"{rtf_rls:.4f}",
             f"{us_rls:.2f}",
             f"{hop_rls:.3f}",
             status_rls,
         ])
 
-    timing_table = format_table(timing_headers, timing_rows)
+    core_table = format_table(timing_headers, core_timing_rows)
+
+    # Optional official API benchmark table if module is present
+    api_table = None
+    if _HAS_OFFICIAL_NLMS and official_nlms is not None:
+        api_rows = []
+        for L in lengths:
+            official_nlms.enhance(noisy[:warm_samples], reference=ref[:warm_samples], sr=sr, order=L, mu=0.5)
+            api_times = []
+            for _ in range(3):
+                t0 = time.perf_counter()
+                _ = official_nlms.enhance(noisy, reference=ref, sr=sr, order=L, mu=0.5)
+                api_times.append(time.perf_counter() - t0)
+            best_api = min(api_times)
+            rtf_api = best_api / seconds
+            us_api = (best_api / n_samples) * 1e6
+            hop_api = (best_api / n_samples) * hop_samples * 1e3
+            status_api = "WITHIN" if hop_api <= budget_ms else "OVER"
+            api_rows.append([
+                str(L),
+                "NLMS (official API end-to-end)",
+                f"{rtf_api:.4f}",
+                f"{us_api:.2f}",
+                f"{hop_api:.3f}",
+                status_api,
+            ])
+        api_table = format_table(timing_headers, api_rows)
 
     # Convergence test on 2.0 s signal
     conv_dur = 2.0
@@ -236,7 +249,7 @@ def run_benchmark(
     conv_rows = []
 
     for L in [32, 64]:
-        e_nlms = run_nlms(noise_c, ref_c, order=L, mu=0.5)
+        e_nlms = local_nlms_filter(noise_c, ref_c, order=L, mu=0.5)
         c_nlms = compute_convergence_samples(e_nlms, sr=sr, drop_db=20.0, win_ms=100.0)
         str_nlms = f"{c_nlms} samples ({c_nlms / sr * 1000.0:.1f} ms)" if c_nlms is not None else "not reached"
 
@@ -254,10 +267,10 @@ def run_benchmark(
         "NumPy": np.__version__,
         "CPU Count": str(os.cpu_count() or 1),
         "Date": datetime.date.today().isoformat(),
-        "NLMS Implementation": "signal_processing.nlms" if _HAS_OFFICIAL_NLMS else "local copy (fallback)",
+        "NLMS Official API": "Available" if _HAS_OFFICIAL_NLMS else "Not importable (skipped API table)",
     }
 
-    return timing_table, conv_table, env_info
+    return core_table, api_table, conv_table, env_info
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -269,23 +282,28 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    timing_table, conv_table, env_info = run_benchmark(
+    core_table, api_table, conv_table, env_info = run_benchmark(
         seed=args.seed,
         seconds=args.seconds,
         quick=args.quick,
     )
 
     print("\n# NLMS vs RLS Benchmark Results\n")
-    print(f"- **Implementation**: Using {env_info['NLMS Implementation']}")
     print(f"- **Platform**: {env_info['Platform']}")
     print(f"- **Python**: {env_info['Python']}")
     print(f"- **NumPy**: {env_info['NumPy']}")
     print(f"- **CPU Count**: {env_info['CPU Count']}")
-    print(f"- **Date**: {env_info['Date']}\n")
+    print(f"- **Date**: {env_info['Date']}")
+    print(f"- **Official NLMS API**: {env_info['NLMS Official API']}\n")
 
-    print("### Execution Timing Benchmark (Best of 3 after warm-up)\n")
-    print(timing_table)
+    print("### Algorithm-Only Execution Timing (Best of 3 after warm-up)\n")
+    print(core_table)
     print("\n")
+
+    if api_table:
+        print("### End-to-End Official API Timing (Includes validation overhead)\n")
+        print(api_table)
+        print("\n")
 
     print("### Convergence Time (-20 dB Error Power Drop, 100 ms Averaging Window)\n")
     print(conv_table)

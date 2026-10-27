@@ -42,20 +42,26 @@ As filter order $N$ scales from 32 to 256, RLS operations per sample scale by $(
 
 All experiments were executed with reproducible CLI commands using synthetic test signals generated deterministically with fixed random seeds.
 
+### Fair Benchmarking Protocol
+To ensure a fair and scientifically rigorous comparison:
+1. **Algorithm-Only Kernels:** NLMS and RLS are benchmarked using equivalent, algorithm-only sample-by-sample update loops (`local_nlms_filter` vs `throwaway_rls_filter`) operating on identical 16 kHz float32 arrays, eliminating input validation, shape checking, and wrapper overhead.
+2. **End-to-End API Timing:** Official API timings (`signal_processing.nlms.enhance`) are measured and presented separately as end-to-end figures (including input validation, argument checks, and float32/float64 conversions). Algorithm-only and end-to-end API measurements are never mixed or compared as equivalent.
+3. **Repetition & Warmup:** Both filters undergo an initial 1,000-sample warmup, followed by 3 repetitions over 1.0 s of audio (16,000 samples). The minimum execution time of the 3 runs is reported.
+
 ### Hardware and Environment
 - **Platform**: Windows-10-10.0.26300-SP0
 - **Python**: 3.11.9
 - **NumPy**: 2.4.6
 - **CPU Count**: 12 logical cores
 - **Date**: 2026-10-27
-- **Implementation Source**: Benchmark run against official `signal_processing` implementations temporarily staged in `/tmp/p3check` from branches `origin/dsp/phase1-p2` and `origin/dsp/phase2-p2`.
+- **Implementation Source**: Benchmark run in temporary staging directory `/tmp/p3check` where Phase 1 (`spectral`, `wiener`, `_common`) and Phase 2 (`lms`, `nlms`, `_adaptive`) modules were temporarily staged from `origin/dsp/phase1-p2` and `origin/dsp/phase2-p2`.
 
 ### Reproduction Commands
 ```bash
-# Timing and convergence comparison
+# Timing and convergence comparison (fair algorithm-only + official API breakdown)
 python -m scripts.time_nlms_vs_rls --seed 42 --seconds 1.0
 
-# Parameter sweep and tuning
+# Parameter sweep and tuning (synthetic dataset only)
 python -m scripts.tune_dsp --seed 42
 ```
 
@@ -63,20 +69,32 @@ python -m scripts.tune_dsp --seed 42
 
 Execution timing benchmarks were conducted over 1.0 s of 16 kHz audio (16,000 samples) across filter lengths $N \in \{32, 64, 128, 256\}$. Each measurement records the best of 3 timed runs following an initial 1,000-sample warmup run. The per-hop processing time is evaluated against the 20 ms hop budget (320 samples at 16 kHz):
 
-| Filter Length | Method | RTF    | us / sample | ms / 20 ms hop | Budget Status |
-|---------------|--------|--------|-------------|----------------|---------------|
-| 32            | NLMS   | 0.0388 | 2.42        | 0.775          | WITHIN        |
-| 32            | RLS    | 0.1255 | 7.85        | 2.510          | WITHIN        |
-| 64            | NLMS   | 0.0397 | 2.48        | 0.793          | WITHIN        |
-| 64            | RLS    | 0.1949 | 12.18       | 3.898          | WITHIN        |
-| 128           | NLMS   | 0.0424 | 2.65        | 0.847          | WITHIN        |
-| 128           | RLS    | 0.3852 | 24.08       | 7.704          | WITHIN        |
-| 256           | NLMS   | 0.0438 | 2.74        | 0.875          | WITHIN        |
-| 256           | RLS    | 1.4872 | 92.95       | 29.744         | OVER          |
+### 1. Algorithm-Only Timing (Fair Core Loop Comparison)
+
+| Filter Length | Method                | RTF    | us / sample | ms / 20 ms hop | Budget Status |
+|---------------|-----------------------|--------|-------------|----------------|---------------|
+| 32            | NLMS (algorithm-only) | 0.0396 | 2.47        | 0.792          | WITHIN        |
+| 32            | RLS (algorithm-only)  | 0.1261 | 7.88        | 2.522          | WITHIN        |
+| 64            | NLMS (algorithm-only) | 0.0402 | 2.51        | 0.803          | WITHIN        |
+| 64            | RLS (algorithm-only)  | 0.1913 | 11.95       | 3.826          | WITHIN        |
+| 128           | NLMS (algorithm-only) | 0.0424 | 2.65        | 0.847          | WITHIN        |
+| 128           | RLS (algorithm-only)  | 0.3871 | 24.19       | 7.742          | WITHIN        |
+| 256           | NLMS (algorithm-only) | 0.0440 | 2.75        | 0.881          | WITHIN        |
+| 256           | RLS (algorithm-only)  | 1.5092 | 94.32       | 30.183         | OVER          |
+
+### 2. End-to-End Official API Timing (Includes Validation Overhead)
+
+| Filter Length | Method                         | RTF    | us / sample | ms / 20 ms hop | Budget Status |
+|---------------|--------------------------------|--------|-------------|----------------|---------------|
+| 32            | NLMS (official API end-to-end) | 0.0394 | 2.46        | 0.788          | WITHIN        |
+| 64            | NLMS (official API end-to-end) | 0.0395 | 2.47        | 0.790          | WITHIN        |
+| 128           | NLMS (official API end-to-end) | 0.0419 | 2.62        | 0.837          | WITHIN        |
+| 256           | NLMS (official API end-to-end) | 0.0434 | 2.71        | 0.868          | WITHIN        |
 
 ### Budget Status Analysis
-- NLMS remains well within budget across all filter orders, using at most **0.875 ms per 20 ms hop** (4.38% of available frame budget at $N=256$).
-- RLS remains within budget up to $N=128$ (7.704 ms per hop), but at $N=256$ it surges to **29.744 ms per 20 ms hop** (RTF = 1.4872), decisively **OVER** budget by 148.7%.
+- **NLMS Algorithm-Only:** Remains well within budget across all filter orders, using at most **0.881 ms per 20 ms hop** (4.41% of the 20 ms frame budget at $N=256$).
+- **RLS Algorithm-Only:** Remains within budget up to $N=128$ (7.742 ms per hop), but at $N=256$ it surges to **30.183 ms per 20 ms hop** (RTF = 1.5092), decisively **OVER** budget by 150.9%.
+- **Validation Overhead:** The official NLMS API validation overhead (`validate_pair`, `validate_order`, `validate_positive`) is negligible on 1.0 s buffers (~0.05 ms total per call), confirming that algorithm loop execution dominates runtime.
 
 ## Convergence
 
@@ -94,7 +112,7 @@ RLS achieves 20 dB attenuation in approximately one-third of the time required b
 We propose to investigate RLS exclusively as an optional or hybrid adaptation mode under strict filter order constraints ($\le 64$), but **the project default must remain NLMS-only**.
 
 ### Supporting Evidence and Rationale:
-1. **Latency and Budget Risk:** NLMS uses less than 0.88 ms per 20 ms hop across all orders ($N \le 256$), leaving >95% headroom for STFT analysis, neural enhancement stages, and I/O buffer management. At order 256, unvectorized Python RLS exceeds the frame budget (29.744 ms > 20 ms). Even at order 64, RLS consumes 3.90 ms per hop (5x more CPU than NLMS).
+1. **Latency and Budget Risk:** NLMS uses less than 0.89 ms per 20 ms hop across all orders ($N \le 256$), leaving >95% headroom for STFT analysis, neural enhancement stages, and I/O buffer management. At order 256, unvectorized Python RLS exceeds the frame budget (30.183 ms > 20 ms). Even at order 64, RLS consumes 3.83 ms per hop (4.8x more CPU than NLMS).
 2. **Diminishing Convergence Benefit:** While RLS converges in 4.0 ms (versus 11.7 ms for NLMS at $N=32$), both filters achieve 20 dB error power attenuation well within 20 ms (a single hop). For continuous speech enhancement and stationary/slowly-varying acoustic noise paths, a 7.7 ms faster initial convergence does not justify a $3\times$ to $5\times$ computational overhead.
 3. **Numerical Stability:** The standard RLS Riccati update is susceptible to loss of positive definiteness under finite-precision arithmetic unless square-root or QR-decomposition forms (e.g. QR-RLS) are adopted, adding further implementation complexity.
 
