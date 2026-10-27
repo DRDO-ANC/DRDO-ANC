@@ -12,7 +12,7 @@ import time
 import pytest
 import torch
 
-from ai_engine.models.crn import CRN
+from ai_engine.models.crn import CRN, CausalBatchNorm2d
 from ai_engine.models.stft import STFT
 from ai_engine.training.losses import si_snr_loss
 from common.constants import N_FREQ, SEED
@@ -88,7 +88,7 @@ class TestCausality:
     """Verify output independence from future frames."""
 
     def test_causality_eval_mode(self) -> None:
-        """In eval() mode, perturbing t >= 100 leaves t < 100 identical (atol=1e-6)."""
+        """In eval() mode, perturbing t >= 100 leaves t < 100 identical."""
         torch.manual_seed(SEED)
         model = CRN().eval()
         spec1 = torch.randn(1, N_FREQ, 251, dtype=torch.complex64)
@@ -101,28 +101,55 @@ class TestCausality:
 
         earlier_out1 = out1[:, :, :100]
         earlier_out2 = out2[:, :, :100]
-        assert torch.allclose(earlier_out1, earlier_out2, atol=1e-6), (
+        assert torch.allclose(earlier_out1, earlier_out2, atol=1e-6, rtol=0.0), (
             f"Eval mode: max diff {(earlier_out1 - earlier_out2).abs().max().item()} >= 1e-6"
         )
 
-    def test_causality_train_mode(self) -> None:
-        """In train() mode, document whether BatchNorm2d leaks across time."""
+    @pytest.mark.parametrize("cutoff", [1, 37, 100, 200])
+    def test_causality_train_mode(self, cutoff: int) -> None:
+        """In train() mode, perturbing future frames leaves earlier outputs unchanged."""
         torch.manual_seed(SEED)
         model = CRN().train()
         spec1 = torch.randn(1, N_FREQ, 251, dtype=torch.complex64)
         spec2 = spec1.clone()
-        spec2[:, :, 100:] = torch.randn_like(spec2[:, :, 100:])
+        spec2[:, :, cutoff:] = torch.randn_like(spec2[:, :, cutoff:])
 
         out1 = model(spec1)
         out2 = model(spec2)
 
-        earlier_out1 = out1[:, :, :100]
-        earlier_out2 = out2[:, :, :100]
+        earlier_out1 = out1[:, :, :cutoff]
+        earlier_out2 = out2[:, :, :cutoff]
         max_diff = (earlier_out1 - earlier_out2).abs().max().item()
-        if not torch.allclose(earlier_out1, earlier_out2, atol=1e-6):
-            pytest.xfail(
-                f"Train mode non-causal due to BatchNorm2d time-dimension statistics (max diff={max_diff:.4f})"
-            )
+        assert torch.allclose(earlier_out1, earlier_out2, atol=1e-6, rtol=0.0), (
+            f"Train mode at cutoff {cutoff}: future frames affected earlier outputs "
+            f"(max diff={max_diff:.4f})"
+        )
+
+    def test_normalization_statistics_do_not_mix_time_frames(self) -> None:
+        """Training normalization at earlier frames is independent of future frames."""
+        torch.manual_seed(SEED)
+        norm = CausalBatchNorm2d(4).train()
+        x1 = torch.randn(2, 4, 8, 12)
+        x2 = x1.clone()
+        x2[..., 6:] = torch.randn_like(x2[..., 6:])
+
+        out1 = norm(x1)
+        out2 = norm(x2)
+
+        assert torch.allclose(out1[..., :6], out2[..., :6], atol=1e-6, rtol=0.0)
+
+    def test_batch_norm_positive_control_leaks_future_statistics(self) -> None:
+        """Ordinary BatchNorm2d changes earlier outputs when future frames change."""
+        torch.manual_seed(SEED)
+        norm = torch.nn.BatchNorm2d(4).train()
+        x1 = torch.randn(2, 4, 8, 12)
+        x2 = x1.clone()
+        x2[..., 6:] = torch.randn_like(x2[..., 6:])
+
+        out1 = norm(x1)
+        out2 = norm(x2)
+
+        assert not torch.allclose(out1[..., :6], out2[..., :6], atol=1e-6, rtol=0.0)
 
 
 # ---------------------------------------------------------------------------

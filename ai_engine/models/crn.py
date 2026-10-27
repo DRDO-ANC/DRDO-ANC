@@ -69,6 +69,39 @@ class CausalConvTranspose2d(nn.Module):
         return out[..., :time_len]
 
 
+class CausalBatchNorm2d(nn.BatchNorm2d):
+    """Batch normalization with training statistics isolated to each time frame."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self._check_input_dim(x)
+
+        if not self.training and self.track_running_stats:
+            return super().forward(x)
+
+        mean = x.mean(dim=(0, 2), keepdim=True)
+        variance = x.var(dim=(0, 2), unbiased=False, keepdim=True)
+        normalized = (x - mean) * torch.rsqrt(variance + self.eps)
+
+        if self.training and self.track_running_stats:
+            with torch.no_grad():
+                self.num_batches_tracked.add_(1)
+                factor = (
+                    self.momentum
+                    if self.momentum is not None
+                    else 1.0 / float(self.num_batches_tracked)
+                )
+                running_mean = x.mean(dim=(0, 2, 3))
+                running_variance = x.var(dim=(0, 2, 3), unbiased=True)
+                self.running_mean.lerp_(running_mean, factor)
+                self.running_var.lerp_(running_variance, factor)
+
+        if self.affine:
+            normalized = normalized * self.weight[None, :, None, None]
+            normalized = normalized + self.bias[None, :, None, None]
+
+        return normalized
+
+
 class CRN(nn.Module):
     """Causal Convolutional Recurrent Network for magnitude-mask speech enhancement."""
 
@@ -100,7 +133,7 @@ class CRN(nn.Module):
                         stride=stride,
                         padding_freq=padding_freq,
                     ),
-                    nn.BatchNorm2d(out_c),
+                    CausalBatchNorm2d(out_c),
                     nn.ELU(),
                 )
             )
@@ -134,7 +167,7 @@ class CRN(nn.Module):
                 )
             ]
             if i > 0:
-                layers.extend([nn.BatchNorm2d(out_c), nn.ELU()])
+                layers.extend([CausalBatchNorm2d(out_c), nn.ELU()])
             else:
                 layers.append(nn.Sigmoid())
             self.decoder.append(nn.Sequential(*layers))
